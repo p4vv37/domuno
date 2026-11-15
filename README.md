@@ -1,18 +1,21 @@
-# Lokalny asystent Home Assistant na Arduino VENTUNO Q
+# Local Home Assistant voice assistant on Arduino VENTUNO Q
 
-Whisper Turbo i Qwen2.5-3B działają na NPU, polski Pocket TTS na CPU.
-LVA obsługuje mikrofon, „Okay Nabu” i głośnik. Home Assistant zarządza rozmową
-oraz wykonuje działania. Może działać na osobnym komputerze.
+This repository contains the scripts and tools needed to run a local voice assistant on Arduino VENTUNO Q that communicates with Home Assistant to control your home.
+It implements the setup described in [Local voice assistant on Arduino VENTUNO Q](https://pkowalski.com/arduino-local-agent/) (article in Polish).
 
-Konfigurujesz **jeden plik `.env`**, a zestaw obsługujesz przez **`./run.sh`**.
-Instrukcja dotyczy czystej instalacji. Nie uruchamiaj jej obok istniejącego
-wdrożenia korzystającego z tych samych portów i nazw kontenerów.
+Whisper Turbo and Qwen2.5-3B run on the NPU, while Polish Pocket TTS runs on the CPU.
+LVA handles the microphone, the "Okay Nabu" wake word and audio playback. Home Assistant
+manages the conversation and executes actions. It can run on a separate computer.
 
-## 1. Przygotuj Arduino
+Configure **one `.env` file** and manage the stack through **`./run.sh`**.
+These instructions cover a fresh installation. Do not run it alongside an existing
+deployment that uses the same ports and container names.
 
-Potrzebne są: Ubuntu ARM64 ze sterownikami Qualcomm dla VENTUNO Q, Docker
-z Compose, Python 3.10+, `uv`, sesja `systemd --user` i kilka GB wolnego miejsca.
-Pobieranie modeli i budowanie obrazów wymaga internetu.
+## 1. Prepare the Arduino
+
+You need Ubuntu ARM64 with the Qualcomm drivers for VENTUNO Q, Docker with Compose,
+Python 3.10+, `uv`, a `systemd --user` session and several GB of free disk space.
+Downloading models and building images requires internet access.
 
 ```bash
 sudo apt update
@@ -24,8 +27,8 @@ git clone https://github.com/p4vv37/ha-local-agent.git
 cd ha-local-agent
 ```
 
-Zainstaluj GenieX, zgodnie z [instrukcją producenta](https://geniex.aihub.qualcomm.com/en/run/cli/install).
-Na poprawnie przygotowanym obrazie Arduino:
+Install GenieX following the [vendor's instructions](https://geniex.aihub.qualcomm.com/en/run/cli/install).
+On a correctly prepared Arduino system image:
 
 ```bash
 curl -fsSL https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-geniex/install.sh -o /tmp/install-geniex.sh
@@ -35,11 +38,11 @@ docker ps
 systemctl --user show-environment
 ```
 
-Sprawdź wersję 0.9.3. Typowa ścieżka to `~/.local/bin/geniex`.
-Przy innej ustaw `GENIEX_BIN` w `.env`. Sterowniki muszą pochodzić z obrazu/BSP
-właściwego dla płytki. Sam instalator GenieX nie zastępuje sterowników NPU.
+Verify that GenieX reports version 0.9.3. The usual path is `~/.local/bin/geniex`.
+Set `GENIEX_BIN` in `.env` if yours differs. The drivers must come from the system
+image/BSP for your board. Installing GenieX alone does not install the NPU drivers.
 
-## 2. Pobierz zasoby i ustaw ścieżki
+## 2. Download assets and configure paths
 
 ```bash
 cp .env.example .env
@@ -47,31 +50,31 @@ chmod 600 .env
 ./run.sh prepare
 ```
 
-`prepare` pobiera Qwena Q4_0, tokenizer, artefakt Whisper Turbo oraz polski model,
-głos i binarkę Pocket TTS Rust. Nie uruchamia modeli. Przygotowanie jest oddzielone
-od startu, żeby pobierania nie powtarzać podczas zwykłego uruchamiania.
+`prepare` downloads Qwen Q4_0, its tokenizer, the Whisper Turbo artifact and the
+Polish Pocket TTS model, reference voice and Rust binary. It does not run inference.
+Preparation is separate from startup so normal starts do not repeat downloads.
 
-W `.env` ustaw:
+Set these values in `.env`:
 
-| Pole | Wartość |
+| Field | Value |
 |---|---|
-| `GGUF` | Pełna ścieżka do pliku Qwen Q4_0, wskazana przez `geniex pull` |
-| `QNN_LIB_DIR` | Katalog zgodnych bibliotek HTP, zawierający `libQnnHtp.so` |
-| `LVA_USER_ID`, `LVA_USER_GROUP` | Wyniki `id -u` oraz `id -g` |
-| `AUDIO_INPUT_DEVICE`, `AUDIO_OUTPUT_DEVICE` | Urządzenia mikrofonu i głośnika |
+| `GGUF` | Full path to the Qwen Q4_0 file reported by `geniex pull` |
+| `QNN_LIB_DIR` | Directory containing compatible HTP libraries, including `libQnnHtp.so` |
+| `LVA_USER_ID`, `LVA_USER_GROUP` | Output of `id -u` and `id -g` |
+| `AUDIO_INPUT_DEVICE`, `AUDIO_OUTPUT_DEVICE` | Microphone and speaker devices |
 
-STT wymaga **QAIRT 2.50.0.260828221209**, **ONNX Runtime 1.30.0** i zgodnego
-pluginu QNN EP. Dostarcz pakiety `.whl` dla Linux ARM64 i CPython 3.12 do
-`stt/runtime/`, według [instrukcji ONNX Runtime/QNN](https://onnxruntime.ai/docs/execution-providers/QNN-ExecutionProvider.html).
-Bibliotek dostawcy nie dołączamy do repo. Katalog HTP bywa dostępny pod
-`~/.local/share/geniex/qairt/htp-files`, ale trzeba potwierdzić jego wersję.
-To jedyny etap zależny od konkretnego obrazu systemu i dostępu do pakietów dostawcy.
+STT requires **QAIRT 2.50.0.260828221209**, **ONNX Runtime 1.30.0** and a compatible
+QNN EP plugin. Place the Linux ARM64 / CPython 3.12 `.whl` packages in
+`stt/runtime/`, following the [ONNX Runtime/QNN instructions](https://onnxruntime.ai/docs/execution-providers/QNN-ExecutionProvider.html).
+Vendor libraries are not included in this repository. HTP libraries may be available
+at `~/.local/share/geniex/qairt/htp-files`, but you must verify their version.
+This step depends on your system image and access to the vendor packages.
 
-Dźwięk korzysta z PulseAudio lub PipeWire-Pulse. Domyślny socket to
-`/run/user/<LVA_USER_ID>/pulse/native`. Aby wyświetlić urządzenia audio, ustaw
-chwilowo `LIST_DEVICES=1`, uruchom LVA i sprawdź jego log, potem przywróć pustą wartość.
+Audio uses PulseAudio or PipeWire-Pulse. The default socket is
+`/run/user/<LVA_USER_ID>/pulse/native`. To list audio devices, temporarily set
+`LIST_DEVICES=1`, start LVA and check its logs, then restore the empty value.
 
-## 3. Sprawdź i uruchom
+## 3. Check and start
 
 ```bash
 ./run.sh check
@@ -79,37 +82,38 @@ chwilowo `LIST_DEVICES=1`, uruchom LVA i sprawdź jego log, potem przywróć pus
 ./run.sh status
 ```
 
-`check` niczego nie instaluje ani nie uruchamia. Wypisuje `OK` lub `BRAK`
-dla wymaganych narzędzi, plików, środowiska NPU i audio.
-`start` nie przechodzi dalej, dopóki wszystkie te pozycje nie są dostępne.
+`check` does not install or start anything. It prints `OK` or `MISSING`
+for the required tools, files, NPU environment and audio socket.
+`start` will not proceed until all these requirements are available.
 
-`start` buduje kontenery i instaluje usługi. Uruchamia kolejno:
+`start` builds containers and installs services. It starts them in this order:
 
-1. Qwena, z jedną próbą załadowania i krótkim testem odpowiedzi.
-2. Whispera, po zakończonym starcie Qwena.
-3. Licznik kontekstu i bramkę z routerem, korzystające z venv utworzonego przez `uv`.
-4. Pocket TTS i LVA.
+1. Qwen, with one loading attempt and a short response check.
+2. Whisper, once Qwen has finished starting.
+3. The context counter and gateway with the router, using a virtual environment created by `uv`.
+4. Pocket TTS and LVA.
 
-Usługi są instalowane z rzeczywistymi ścieżkami repo. Nie kopiujesz ani nie
-edytujesz plików systemd. `setup.sh` to instalator wywoływany przez `run.sh`.
-Nie restartuje już działającego backendu Qwena. Zmianę modelu lub jego kontekstu
-przeprowadzaj jako osobny zimny start płytki, nie przez kolejne próby ładowania.
+Services use the actual repository paths. You do not need to copy or edit systemd
+unit files. `setup.sh` is the internal installer called by `run.sh`.
+It does not restart an already running Qwen backend. Apply model or context changes
+with a separate cold boot of the board, rather than repeated loading attempts.
 
-W HA dodaj:
+Add these integrations in HA:
 
-| Integracja | Adres |
+| Integration | Address |
 |---|---|
-| Wyoming STT | Host: IP Arduino, port `10301` |
-| Wyoming TTS | Host: IP Arduino, port `10201`, głos `shefowl`, język `pl` |
-| [Local OpenAI LLM](https://github.com/skye-harris/hass_local_openai_llm), przez HACS | `http://<IP-Arduino>:18191/v1` |
-| ESPHome, dla LVA | Host: IP Arduino, port `6053`, bez `http://` |
+| Wyoming STT | Host: Arduino IP, port `10301` |
+| Wyoming TTS | Host: Arduino IP, port `10201`, voice `shefowl`, language `pl` |
+| [Local OpenAI LLM](https://github.com/skye-harris/hass_local_openai_llm), through HACS | `http://<Arduino-IP>:18191/v1` |
+| ESPHome, for LVA | Host: Arduino IP, port `6053`, without `http://` |
 
-W Local OpenAI wybierz model `bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_0`,
-typ `llama.cpp` i narzędzia **Assist / Device control**. Udostępnij wybrane encje.
-W ustawieniach asystenta przypisz polskie STT, agenta i TTS, a następnie ten
-asystent do satelity LVA. Najpierw sprawdź neutralne pytanie, potem wybrane działanie.
+In Local OpenAI, select model `bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_0`,
+type `llama.cpp` and **Assist / Device control** tools. Expose the entities you want
+to control. In the assistant settings, select Polish STT, the conversation agent
+and TTS, then assign this assistant to the LVA satellite. Try a neutral question
+first, then a device command.
 
-## Codzienna obsługa
+## Daily use
 
 ```bash
 ./run.sh status
@@ -119,52 +123,54 @@ journalctl --user -u qwen-ha-gateway -n 30 --no-pager
 docker logs --tail 30 linux-voice-assistant
 ```
 
-Po ręcznym zatrzymaniu całego zestawu ponowne zimne ładowanie Qwena w tym samym
-bootcie blokuje guard. W takim przypadku zrestartuj płytkę. Nie usuwaj jego blokady
-w celu wymuszania kolejnych prób po FastRPC ENOMEM.
+After you manually stop the entire stack, the guard blocks another Qwen cold load
+within the same boot. Reboot the board in that case. Do not clear the guard's lock
+to force repeated attempts after FastRPC ENOMEM.
 
-Autostart usług użytkownika bez logowania:
+To start user services without logging in:
 
 ```bash
 sudo loginctl enable-linger "$USER"
 ```
 
-Jednostki Qwena, STT, bramki i licznika są włączane przez instalator. TTS i LVA
-mają Docker `unless-stopped`. Zweryfikuj pełny restart na swoim Arduino.
+The installer enables the Qwen, STT, gateway and counter units. TTS and LVA use
+Docker's `unless-stopped` restart policy. Verify a full reboot on your Arduino.
 
-## Co zostało w kodzie
+## Code layout
 
 ```text
-run.sh + .env.example   uruchamianie i wspólna konfiguracja
-setup.sh               wewnętrzna instalacja usług przez uv
-llm/backend.py         kontrola startu i gotowości modeli
-stt/                   silnik QNN, walidacja modelu, protokół Wyoming
-gateway/              proxy, router, katalog HA, licznik kontekstu
-tts-pocket-wyoming/    adapter Rust, protokół i przesyłanie PCM
-lva/                   konfiguracja gotowego satelity
-tests/                 testy offline
+run.sh + .env.example   startup and shared configuration
+setup.sh               internal service installation using uv
+llm/backend.py         model startup and readiness checks
+stt/                   QNN engine, model validation, Wyoming protocol
+gateway/               proxy, router, HA catalog, context counter
+tts-pocket-wyoming/    Rust adapter, protocol and PCM streaming
+lva/                   configuration for the existing satellite
+tests/                 offline tests
 ```
 
-Router obsługuje proste włączanie/wyłączanie i otwieranie/zamykanie.
-Korzysta z bieżących nazw i schematów HA, dopuszcza drobne błędy STT i pyta
-przy niejednoznaczności. Złożone komendy trafiają do Qwena. `DECIDE_APPLY=0`
-w `.env` wyłącza router. Domyślny kontekst 10240 ma licznik z ostrożnym zapasem.
-Przekroczenie budżetu daje 413, niedostępny licznik 503 przed inferencją.
-Szacunek nie jest certyfikowanym odpowiednikiem natywnego tokenizera.
+The router handles simple Polish on/off and open/close commands.
+It uses current HA names and schemas, tolerates minor STT errors and asks for
+clarification when a command is ambiguous. Complex commands go to Qwen.
+Set `DECIDE_APPLY=0` in `.env` to disable the router. The default context size of
+10240 uses a counter with a conservative margin. Requests exceeding the budget
+receive HTTP 413, and an unavailable counter produces HTTP 503 before inference.
+The estimate is not a certified equivalent of the native tokenizer.
 
-Bramka domyślnie działa bez klucza w zaufanym LAN. Opcjonalny
-`QWEN_GATEWAY_API_KEY` ustaw w `.env` i w integracji HA. Nie wymaga klucza chmurowego.
-Surowego audio nie zapisujemy. `.env`, modele, pakiety dostawcy i logi są ignorowane
-przez Git. Kod korzysta z modeli i runtime'ów ich autorów, serwer TTS adaptowano
-z [Pocket TTS Wyoming](https://github.com/ikidd/pocket-tts-wyoming), a satelita pochodzi
-z [Linux Voice Assistant](https://github.com/OHF-Voice/linux-voice-assistant).
+By default, the gateway runs without an API key on a trusted LAN. To enable
+optional authentication, set `QWEN_GATEWAY_API_KEY` in `.env` and in the HA integration.
+No cloud API key is required. Raw audio is not saved. Git ignores `.env`, models,
+vendor packages and logs. The code uses models and runtimes from their respective
+authors. The TTS server was adapted from
+[Pocket TTS Wyoming](https://github.com/ikidd/pocket-tts-wyoming), and the satellite
+comes from [Linux Voice Assistant](https://github.com/OHF-Voice/linux-voice-assistant).
 
-Testy bez pobierania czegokolwiek i bez uruchamiania usług:
+Run tests without downloading anything or starting services:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 ```
 
-Z `.venv/bin/python` zamiast `python3` testy obejmą też zainstalowane `simplemma`.
-Testy protokołu używają atrap modeli. Nowe obrazy ARM64 i ich współpracę z NPU
-trzeba sprawdzić na docelowej płytce.
+Use `.venv/bin/python` instead of `python3` to also test the installed `simplemma`.
+Protocol tests use fake models. New ARM64 images and their NPU integration need
+to be tested on the target board.

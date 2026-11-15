@@ -149,7 +149,7 @@ if sys.argv[1] == 'venv':
         result=subprocess.run(['bash',str(self.deploy/'run.sh'),'start'],env=env,
                               capture_output=True,text=True)
         self.assertNotEqual(result.returncode,0)
-        self.assertIn('BRAK:',result.stdout)
+        self.assertIn('MISSING:',result.stdout)
         self.assertEqual((self.root/'docker-calls').read_text().strip(),'info')
         self.assertFalse((self.root/'uv-calls').exists())
         calls=(self.root/'systemctl-calls').read_text()

@@ -1,16 +1,16 @@
-# środowisko i artefakty lokalne
+# local environment and artifacts
 .venv/
 logs/
 __pycache__/
 *.pyc
 
-# lokalne klucze i modele
+# local keys and models
 .env
 .env.*
 !.env.example
 *.gguf
 
-# logi i prywatne klucze poza standardowymi katalogami
+# logs and private keys outside standard directories
 *.log
 *.jsonl
 *.pem

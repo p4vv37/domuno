@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Uruchamiaj jako zwykły użytkownik z aktywną sesją systemd --user.
+# Run as a regular user with an active systemd --user session.
 set -euo pipefail
 umask 077
 
@@ -19,32 +19,32 @@ GENIEX_BIN="${GENIEX_BIN:-$HOME/.local/bin/geniex}"
 LOG_DIR="$DEPLOY_DIR/logs"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
-fail() { echo "Błąd: $*" >&2; exit 1; }
-command -v python3 >/dev/null || fail 'Zainstaluj Python 3.10+.'
-command -v uv >/dev/null || fail 'Zainstaluj uv według README.'
-command -v systemctl >/dev/null || fail 'Wymagany systemd.'
-python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || fail 'Wymagany Python 3.10+.'
-[[ $EUID -ne 0 ]] || fail 'Uruchom bez sudo, jako użytkownik usługi.'
-[[ $NCTX =~ ^[0-9]+$ ]] && (( NCTX >= 2048 && NCTX <= 10240 )) || fail 'NCTX: 2048–10240.'
-[[ $DECIDE_APPLY == 0 || $DECIDE_APPLY == 1 ]] || fail 'DECIDE_APPLY: 0 lub 1.'
+fail() { echo "Error: $*" >&2; exit 1; }
+command -v python3 >/dev/null || fail 'Install Python 3.10+.'
+command -v uv >/dev/null || fail 'Install uv following the README.'
+command -v systemctl >/dev/null || fail 'systemd is required.'
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || fail 'Python 3.10+ is required.'
+[[ $EUID -ne 0 ]] || fail 'Run without sudo, as the service user.'
+[[ $NCTX =~ ^[0-9]+$ ]] && (( NCTX >= 2048 && NCTX <= 10240 )) || fail 'NCTX must be between 2048 and 10240.'
+[[ $DECIDE_APPLY == 0 || $DECIDE_APPLY == 1 ]] || fail 'DECIDE_APPLY must be 0 or 1.'
 for port in "$GATEWAY_PORT" "$COUNTER_PORT"; do
-    [[ $port =~ ^[0-9]+$ ]] && (( port > 0 && port < 65536 )) || fail 'Niepoprawny port.'
+    [[ $port =~ ^[0-9]+$ ]] && (( port > 0 && port < 65536 )) || fail 'Invalid port.'
 done
-# systemd ma własne reguły cytowania i ekspansji. Odrzuć rzadkie znaki
-# specjalne zamiast generować niepoprawny unit lub rozwijać cudzą konfigurację.
+# systemd has its own quoting and expansion rules. Reject unsupported special
+# characters to avoid invalid units or unintended configuration expansion.
 for value in "$DEPLOY_DIR" "$MODEL" "$BACKEND_URL" "$GATEWAY_HOST" "$COUNTER_URL" "$GGUF" "$TOKENIZER" "$GENIEX_BIN"; do
-    [[ ! $value =~ [\"\$\%\\] && $value != *$'\n'* && $value != *$'\r'* ]] || fail 'Konfiguracja zawiera znak nieobsługiwany przez instalator.'
+    [[ ! $value =~ [\"\$\%\\] && $value != *$'\n'* && $value != *$'\r'* ]] || fail 'Configuration contains a character unsupported by the installer.'
 done
-systemctl --user show-environment >/dev/null || fail 'Brak sesji systemd --user. Uruchom z terminala na Arduino.'
+systemctl --user show-environment >/dev/null || fail 'No systemd --user session. Run from a terminal on the Arduino.'
 if [[ -n $GGUF || -n $TOKENIZER ]]; then
-    [[ -z $COUNTER_URL ]] || fail 'Wybierz GGUF + TOKENIZER albo zewnętrzny COUNTER_URL.'
-    [[ -f $GGUF && -f $TOKENIZER/tokenizer.json ]] || fail 'Podaj istniejący GGUF i katalog TOKENIZER z tokenizer.json.'
+    [[ -z $COUNTER_URL ]] || fail 'Choose GGUF + TOKENIZER or an external COUNTER_URL.'
+    [[ -f $GGUF && -f $TOKENIZER/tokenizer.json ]] || fail 'Provide an existing GGUF file and a TOKENIZER directory containing tokenizer.json.'
     COUNTER_URL="http://127.0.0.1:$COUNTER_PORT/count"
     LOCAL_COUNTER=1
 else
     LOCAL_COUNTER=0
 fi
-(( NCTX <= 4096 )) || [[ -n $COUNTER_URL ]] || fail 'NCTX > 4096 wymaga GGUF + TOKENIZER albo COUNTER_URL.'
+(( NCTX <= 4096 )) || [[ -n $COUNTER_URL ]] || fail 'NCTX > 4096 requires GGUF + TOKENIZER or COUNTER_URL.'
 
 cd "$DEPLOY_DIR"
 [[ -x .venv/bin/python ]] || uv venv --python python3 .venv
@@ -97,7 +97,7 @@ WantedBy=default.target
 EOF
 
 if [[ $FULL_STACK == 1 ]]; then
-    [[ -x $GENIEX_BIN ]] || fail 'Brak binarki GenieX. Sprawdź GENIEX_BIN.'
+    [[ -x $GENIEX_BIN ]] || fail 'GenieX binary not found. Check GENIEX_BIN.'
     cat > "$UNIT_DIR/qwen25-3b-backend.service" <<EOF
 [Unit]
 Description=Qwen local NPU backend
@@ -147,10 +147,10 @@ if [[ $FULL_STACK == 1 ]]; then
     systemctl --user start qwen25-whisper-npu.service
 fi
 systemctl --user enable qwen-ha-gateway.service
-# enable --now nie przeładowuje już działającej usługi po zmianie konfiguracji.
+# enable --now does not reload a running service after configuration changes.
 systemctl --user restart qwen-ha-gateway.service
 sleep 2
-systemctl --user is-active --quiet qwen-ha-gateway.service || fail 'Bramka nie wystartowała. Sprawdź journalctl --user -u qwen-ha-gateway -n 30.'
-echo "Bramka działa. Home Assistant: http://<IP-Arduino>:$GATEWAY_PORT/v1"
-echo 'Sprawdź jeszcze test inferencji z README; status usługi nie potwierdza działania modelu.'
-echo 'Autostart bez logowania: sudo loginctl enable-linger "$USER"'
+systemctl --user is-active --quiet qwen-ha-gateway.service || fail 'Gateway failed to start. Check journalctl --user -u qwen-ha-gateway -n 30.'
+echo "Gateway is running. Home Assistant: http://<Arduino-IP>:$GATEWAY_PORT/v1"
+echo 'Also run the inference check from the README. Service status alone does not verify model inference.'
+echo 'Start automatically without logging in: sudo loginctl enable-linger "$USER"'
