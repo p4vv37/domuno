@@ -1,0 +1,26 @@
+# środowisko i artefakty lokalne
+.venv/
+logs/
+__pycache__/
+*.pyc
+
+# lokalne klucze i modele
+.env
+.env.*
+!.env.example
+*.gguf
+
+# logi i prywatne klucze poza standardowymi katalogami
+*.log
+*.jsonl
+*.pem
+*.key
+
+# downloaded assets and captures
+assets/
+*.safetensors
+*.wav
+*.mp3
+
+# target-specific vendor runtime
+stt/runtime/

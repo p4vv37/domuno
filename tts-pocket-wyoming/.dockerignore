@@ -1,0 +1,8 @@
+assets/*
+!assets/pocket-tts
+!assets/LICENSE
+.env
+__pycache__/
+*.pyc
+*.wav
+*.log

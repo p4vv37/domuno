@@ -1,0 +1,26 @@
+services:
+  whisper-turbo-qnn:
+    build: .
+    image: ha-local-whisper:turbo-qnn
+    container_name: whisper-turbo-qnn
+    # The systemd unit controls startup order after the LLM cold load.
+    restart: "no"
+    ports:
+      - "10301:10301"
+    devices:
+      - /dev/fastrpc-cdsp:/dev/fastrpc-cdsp
+      - /dev/fastrpc-cdsp-secure:/dev/fastrpc-cdsp-secure
+      - /dev/dma_heap/system:/dev/dma_heap/system
+      - /dev/dma_heap/qcom,system:/dev/dma_heap/qcom,system
+    volumes:
+      - ./assets:/turbo:ro
+      - ${QNN_LIB_DIR:?Set QNN_LIB_DIR to the QAIRT 2.50 HTP library directory}:/host_qnn:ro
+      - /lib/aarch64-linux-gnu/libcdsprpc.so.1:/rpc/libcdsprpc.so:ro
+      - /lib/aarch64-linux-gnu/libcdsprpc.so.1:/rpc/libcdsprpc.so.1:ro
+      - /lib/aarch64-linux-gnu/libdmabufheap.so.0:/rpc/libdmabufheap.so.0:ro
+      - /lib/aarch64-linux-gnu/libatomic.so.1:/rpc/libatomic.so.1:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

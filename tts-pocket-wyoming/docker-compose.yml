@@ -1,0 +1,15 @@
+services:
+  pocket-tts-wyoming:
+    build: .
+    image: ha-local-pocket-tts:rust
+    container_name: tts-pocket-pl
+    ports:
+      - "10201:10201"
+    restart: unless-stopped
+    volumes:
+      - ./assets:/assets:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
