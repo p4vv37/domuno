@@ -165,6 +165,11 @@ authors. The TTS server was adapted from
 [Pocket TTS Wyoming](https://github.com/ikidd/pocket-tts-wyoming), and the satellite
 comes from [Linux Voice Assistant](https://github.com/OHF-Voice/linux-voice-assistant).
 
+Before synthesis, `num2words` converts standalone numbers to Polish words.
+Decimal digits retain their zeros, and percentages and Celsius temperatures are
+expanded for speech. Dates, times, URLs and identifiers are left unchanged.
+Normalization runs before sentence splitting and the final text length check.
+
 Run tests without downloading anything or starting services:
 
 ```bash
@@ -172,5 +177,6 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 ```
 
 Use `.venv/bin/python` instead of `python3` to also test the installed `simplemma`.
+Number normalization tests require `num2words==0.5.14`, included in the TTS image.
 Protocol tests use fake models. New ARM64 images and their NPU integration need
 to be tested on the target board.
