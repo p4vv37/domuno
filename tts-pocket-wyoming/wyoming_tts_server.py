@@ -9,15 +9,15 @@ exposing available voices to Home Assistant for selection.
 import argparse
 import asyncio
 import logging
-import os
 import time
 import math
 from functools import partial
 from typing import Optional
 
 import numpy
+from rust_tts_backend import split_ready_text
 
-from tts_render_worker import RenderBusy, RenderWorker, RequestMetrics, PCMStream, StreamCancelled
+from tts_render_worker import RenderBusy, RenderWorker, RequestMetrics, PCMStream, StreamCancelled, TextStream
 
 # Polish fine-tune (shefowl/pocket-tts-polish-6l) has a single reference voice.
 # Map voice name -> audio prompt (reference.wav ships in the model repo).
@@ -39,15 +39,11 @@ from wyoming.tts import (
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_PORT = int(os.environ.get("WYOMING_PORT", "10201"))
-DEFAULT_VOICE = os.environ.get("DEFAULT_VOICE", "shefowl")
-# Prefix trimming tunables (in seconds)
-# Minimum time before looking for the pause after the sacrificial prefix
-PREFIX_MIN_DURATION = float(os.environ.get("PREFIX_MIN_DURATION", "0.15"))
-# Maximum time to search for the prefix end
-PREFIX_MAX_DURATION = float(os.environ.get("PREFIX_MAX_DURATION", "1.0"))
-# Minimum silence duration to consider it the gap after the prefix
-PREFIX_SILENCE_GAP = float(os.environ.get("PREFIX_SILENCE_GAP", "0.08"))
+# Prefix trimming (seconds). These are measured service constants, not deployment
+# knobs: the tests inject shorter values into their synthetic namespace.
+PREFIX_MIN_DURATION = 0.15   # minimum time before looking for the pause
+PREFIX_MAX_DURATION = 1.0    # maximum time to search for the prefix end
+PREFIX_SILENCE_GAP = 0.08    # minimum silence gap after the "... " prefix
 
 _VOICE_STATES: dict[str, dict] = {}
 
@@ -73,6 +69,10 @@ class PocketTTSEventHandler(AsyncEventHandler):
         self.is_streaming: Optional[bool] = None
         self._synthesize: Optional[Synthesize] = None
         self._stream_text: str = ""
+        self._stream_chars = 0
+        self._text_source = None
+        self._stream_task = None
+        self._stream_metrics = None
 
     async def handle_event(self, event: Event) -> bool:
         """Handle incoming Wyoming protocol events."""
@@ -90,71 +90,116 @@ class PocketTTSEventHandler(AsyncEventHandler):
                     return True
 
                 synthesize = Synthesize.from_event(event)
-                await self._handle_synthesize(synthesize, send_start=True, send_stop=True)
-                return True
+                return await self._handle_synthesize(synthesize, send_start=True, send_stop=True)
 
             if SynthesizeStart.is_type(event.type):
+                if self.is_streaming:
+                    raise ValueError('TTS text stream already started')
                 stream_start = SynthesizeStart.from_event(event)
                 self.is_streaming = True
-                self._stream_text = ""
-                self._synthesize = Synthesize(text="", voice=stream_start.voice)
-                _LOGGER.debug("Text stream started: voice=%s", stream_start.voice)
+                self._stream_text = ''
+                self._stream_chars = 0
+                self._text_source = TextStream()
+                self._stream_task = None
+                self._stream_metrics = RequestMetrics()
+                self._stream_metrics.mark('request_received')
+                self._stream_metrics.mark('text_stream_start')
+                self._synthesize = Synthesize(text='', voice=stream_start.voice)
                 return True
 
             if SynthesizeChunk.is_type(event.type):
-                assert self._synthesize is not None
-                stream_chunk = SynthesizeChunk.from_event(event)
-                if (getattr(self.cli_args, 'pcm_streaming', False) and
-                        len(self._stream_text) + len(stream_chunk.text) > getattr(self.cli_args, 'pcm_max_text', 2048) - 4):
-                    self._stream_text = ''
-                    self._synthesize = None
-                    self.is_streaming = False
-                    await self.write_event(Error(text='TTS text exceeds streaming limit', code='TextTooLong').event())
-                    return False
-                self._stream_text += stream_chunk.text
+                if not self.is_streaming or self._synthesize is None:
+                    raise ValueError('Send synthesize-start before text chunks')
+                chunk = SynthesizeChunk.from_event(event).text
+                self._stream_chars += len(chunk)
+                if self._stream_chars > getattr(self.cli_args, 'pcm_max_text', 2048) - 4:
+                    raise ValueError('TTS text exceeds streaming limit')
+                self._stream_metrics.mark('first_text_chunk')
+                self._stream_text += chunk
+                ready, self._stream_text = split_ready_text(self._stream_text)
+                for sentence in ready:
+                    self._text_source.send(sentence)
+                if ready:
+                    self._stream_metrics.mark('first_sentence_ready')
+                    self._start_text_render()
+                if self._stream_task is not None and self._stream_task.done():
+                    if not self._stream_task.result():
+                        return False
                 return True
 
             if SynthesizeStop.is_type(event.type):
-                assert self._synthesize is not None
+                if not self.is_streaming or self._synthesize is None:
+                    raise ValueError('TTS text stream not started')
+                self._stream_metrics.mark('text_stream_stop')
                 if self._stream_text.strip():
-                    self._synthesize.text = self._stream_text.strip()
-                    success = await self._handle_synthesize(
-                        self._synthesize, send_start=True, send_stop=True
-                    )
-                    if success is False:
-                        self.is_streaming = False
-                        self._stream_text = ''
-                        self._synthesize = None
+                    self._text_source.send(self._stream_text)
+                    self._stream_metrics.mark('first_sentence_ready')
+                    self._start_text_render()
+                self._text_source.finish()
+                if self._stream_task is not None:
+                    if not await self._stream_task:
                         return False
-
+                else:
+                    self._stream_metrics.mark('request_empty')
                 await self.write_event(SynthesizeStopped().event())
                 self.is_streaming = False
-                self._stream_text = ""
-                _LOGGER.debug("Text stream stopped")
+                self._stream_text = ''
+                self._synthesize = None
+                self._stream_task = None
+                self._text_source = None
                 return True
 
             return True
         except Exception as err:
+            metrics = getattr(self, '_stream_metrics', None)
+            if metrics is not None:
+                metrics.mark('request_failed')
+            self.is_streaming = False
+            await self.disconnect()
             await self.write_event(
                 Error(text=str(err), code=err.__class__.__name__).event()
             )
             raise err
 
+    def _start_text_render(self):
+        if self._stream_task is None:
+            self._stream_task = asyncio.create_task(self._handle_synthesize(
+                self._synthesize, text_source=self._text_source, metrics=self._stream_metrics))
+
+    async def disconnect(self):
+        metrics = getattr(self, '_stream_metrics', None)
+        if self.is_streaming and metrics is not None:
+            metrics.mark('request_cancelled')
+        source = getattr(self, '_text_source', None)
+        if source is not None:
+            source.cancel()
+        task = getattr(self, '_stream_task', None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.is_streaming = False
+        self._stream_text = ''
+        self._synthesize = None
+        self._text_source = None
+        self._stream_task = None
+
     async def _handle_synthesize(
-        self, synthesize: Synthesize, send_start: bool = True, send_stop: bool = True
+        self, synthesize: Synthesize, send_start: bool = True, send_stop: bool = True,
+        text_source=None, metrics=None
     ) -> bool:
         """Handle synthesis request."""
 
-        metrics = RequestMetrics()
+        metrics = metrics or RequestMetrics()
         metrics.mark('request_received')
         raw_text = synthesize.text
         if (getattr(self.cli_args, 'pcm_streaming', False) and
                 len(raw_text) > getattr(self.cli_args, 'pcm_max_text', 2048) - 4):
+            metrics.mark('request_failed')
             await self.write_event(Error(text='TTS text exceeds streaming limit', code='TextTooLong').event())
-            return True
+            return False
         text = " ".join(raw_text.strip().splitlines())
 
-        if not text:
+        if not text and text_source is None:
             metrics.mark('request_empty')
             _LOGGER.warning("Empty text received")
             if send_stop:
@@ -164,7 +209,7 @@ class PocketTTSEventHandler(AsyncEventHandler):
 
         # Add a sacrificial prefix to prevent the first word from being swallowed
         # by the voice prompt "blend region". This prefix audio will be trimmed later.
-        text = "... " + text
+        text = text_source if text_source is not None else "... " + text
 
         voice_name: Optional[str] = None
 
@@ -189,16 +234,16 @@ class PocketTTSEventHandler(AsyncEventHandler):
         return await self._handle_pcm_stream(voice_name, text, metrics, send_start, send_stop)
 
     async def _handle_pcm_stream(self, voice, text, metrics, send_start, send_stop):
-        if len(text) > getattr(self.cli_args, 'pcm_max_text', 2048):
+        if isinstance(text, str) and len(text) > getattr(self.cli_args, 'pcm_max_text', 2048):
             await self.write_event(Error(text="TTS text exceeds streaming limit", code="TextTooLong").event())
-            return True
+            return False
         stream = PCMStream(asyncio.get_running_loop())
         try:
             job = self.render_worker.submit(self._produce_pcm, voice, text, metrics, stream)
         except RenderBusy:
             metrics.mark('request_busy')
             await self.write_event(Error(text="TTS engine is busy", code="ServerBusy").event())
-            return True
+            return False
         job.add_done_callback(stream.notify)
         sent = False
         try:
@@ -226,6 +271,8 @@ class PocketTTSEventHandler(AsyncEventHandler):
             return False
         finally:
             stream.cancel()
+            if isinstance(text, TextStream):
+                text.cancel()
             def consume(future):
                 if not future.cancelled(): future.exception()
             job.add_done_callback(consume)
@@ -233,18 +280,38 @@ class PocketTTSEventHandler(AsyncEventHandler):
 
     def _produce_pcm(self, voice, text, metrics, stream):
         metrics.mark('render_start')
+        remaining = int(self.tts_model.sample_rate * getattr(self.cli_args, 'pcm_max_seconds', 120))
+        deadline = time.monotonic() + 130
+        try:
+            for sentence in ([text] if isinstance(text, str) else text):
+                if stream.stopped.is_set():
+                    raise StreamCancelled()
+                if not sentence.startswith('... '):
+                    sentence = '... ' + sentence
+                remaining -= self._produce_segment(voice, sentence, metrics, stream, remaining, deadline)
+        except StreamCancelled:
+            metrics.mark('render_cancelled')
+            return
+        except BaseException:
+            metrics.mark('render_failed')
+            raise
+        finally:
+            metrics.mark('render_closed')
+        metrics.mark('render_done')
+
+    def _produce_segment(self, voice, text, metrics, stream, limit, deadline):
         generator = None
         try:
             if voice not in _VOICE_STATES:
                 _VOICE_STATES[voice] = self.tts_model.get_state_for_audio_prompt(getattr(self.tts_model, 'reference', None) or PREDEFINED_VOICE_NAMES[voice])
             rate = self.tts_model.sample_rate
-            limit = int(rate * getattr(self.cli_args, 'pcm_max_seconds', 120))
             target = max(int(rate * getattr(self.cli_args, 'pcm_buffer_seconds', 2)), int(rate * PREFIX_MAX_DURATION), 1)
             arrays = []; total = 0; incremental = None; tail = numpy.empty(0, dtype=numpy.float32)
             peak = 0.; padding = int(rate * .05); onset = True
             began = time.monotonic()
             generator = self.tts_model.generate_audio_stream(model_state=_VOICE_STATES[voice], text_to_generate=text, copy_state=True)
             for chunk in generator:
+                if time.monotonic() > deadline: raise TimeoutError('TTS generation timed out')
                 if stream.stopped.is_set(): raise StreamCancelled()
                 a = numpy.asarray(chunk.detach().cpu().numpy(), dtype=numpy.float32)
                 if a.ndim != 1 or not numpy.isfinite(a).all(): raise ValueError('Invalid model PCM')
@@ -284,21 +351,10 @@ class PocketTTSEventHandler(AsyncEventHandler):
                 if len(pcm_tail): stream.send(pcm_tail.tobytes())
             elif arrays:
                 stream.send(self._finish_pcm_arrays(arrays, voice, metrics))
-        except StreamCancelled:
-            metrics.mark('render_cancelled')
-            return
-        except BaseException:
-            metrics.mark('render_failed'); raise
         finally:
-            try:
-                if generator is not None and hasattr(generator, 'close'):
-                    generator.close()
-            except BaseException:
-                metrics.mark('render_failed')
-                raise
-            finally:
-                metrics.mark('render_closed')
-        metrics.mark('render_done')
+            if generator is not None and hasattr(generator, 'close'):
+                generator.close()
+        return total
 
     def _finish_pcm_arrays(self, all_audio_arrays, voice_name, metrics):
         sample_rate = self.tts_model.sample_rate
@@ -352,13 +408,12 @@ class PocketTTSEventHandler(AsyncEventHandler):
             first_non_silent = max(0, non_silent_indices[0] - padding_samples)
             full_audio = full_audio[first_non_silent:]
 
-            # Trim trailing silence at the end
-            non_silent_indices = numpy.where(numpy.abs(full_audio) > threshold)[0]
-            if len(non_silent_indices) > 0:
-                last_non_silent = non_silent_indices[-1] + padding_samples
-                full_audio = full_audio[:last_non_silent + 1]
-
-        full_audio = (full_audio.clip(-1.0, 1.0) * 32767).astype("int16")
+        # Preserve quiet speech in the full-buffer path too. Only PCM zeros
+        # are removable at the end, not samples below a peak-relative threshold.
+        full_audio = (full_audio.clip(-1.0, 1.0) * 32767).astype('<i2')
+        audible = numpy.flatnonzero(full_audio)
+        if len(audible):
+            full_audio = full_audio[:int(audible[-1]) + int(sample_rate * .05) + 1]
         audio_bytes = full_audio.tobytes()
         if audio_bytes:
             # Full buffering + trimming: first deliverable PCM exists only now.
@@ -385,6 +440,7 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     model = RustTTSModel.from_environment()
     worker = RenderWorker()
+    server = None
     try:
         _VOICE_STATES['shefowl'] = model.get_state_for_audio_prompt(model.reference)
         attribution = Attribution(name='shefowl', url='https://huggingface.co/shefowl/pocket-tts-polish-6l')
@@ -397,6 +453,8 @@ async def main():
         _LOGGER.info('Ready: Polish voice shefowl')
         await server.run(partial(PocketTTSEventHandler, info, args, model, worker))
     finally:
+        if server is not None:
+            await server.stop()
         await asyncio.to_thread(worker.close)
         await asyncio.to_thread(model.close)
 

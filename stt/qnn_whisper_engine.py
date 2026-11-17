@@ -1,4 +1,4 @@
-"""Persistent, explicitly constructed QNN Whisper Small engine (16 kHz mono PCM).
+"""Persistent QNN Whisper Large-v3-Turbo engine (16 kHz mono PCM).
 
 Importing this module does not import ORT, NumPy or a backend. One engine owns
 process-wide plugin registration. No automatic CPU fallback or model reload.
@@ -35,7 +35,7 @@ class QnnWhisperEngine:
     Clips shorter than 100 ms, effectively silent, or longer than 30 s fail.
     This engine does not resample, trim, silently truncate or change host env.
     """
-    def __init__(self, model_dir, tokenizer, backend, max_tokens=128, *, model_profile='small-fp16', metadata=None):
+    def __init__(self, model_dir, tokenizer, backend, max_tokens=128, *, metadata):
         global _OWNER
         self._lock = threading.RLock()
         self.encoder = self.decoder = self.tokenizer = None
@@ -44,7 +44,7 @@ class QnnWhisperEngine:
         self._ort = None
         if not 4 <= max_tokens <= 199:
             raise ValueError('max_tokens must be in [4,199] including prefix steps')
-        self.profile = load_profile(model_profile, metadata)
+        self.profile = load_profile(metadata)
         self.max_tokens = max_tokens
         root = Path(model_dir)
         paths = {}

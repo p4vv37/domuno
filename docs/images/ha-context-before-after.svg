@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="490" viewBox="0 0 1200 490" role="img" aria-labelledby="title desc">
+<title id="title">Less context. Faster answers.</title>
+<desc id="desc">Qwen2.5-3B before and after reducing HA exposure. Original prompt: 7781 vs 3550 tokens. Controlled fixed-sentence answer: median 22.741 vs 9.968 seconds, three runs per variant.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#728198" stroke-width="1.5"/></marker></defs>
+<rect x="0" y="0" width="1200" height="490" rx="0" fill="#f8fafc" stroke="none"/>
+<text x="48" y="61" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="34" font-weight="700" text-anchor="start">Less context. Faster answers.</text>
+<text x="48" y="100" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="21" font-weight="400" text-anchor="start">Qwen2.5-3B · before and after limiting device exposure</text>
+<text x="48" y="164" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="25" font-weight="700" text-anchor="start">Input tokens</text>
+<line x1="138" y1="190" x2="138" y2="349" stroke="#dce3ec" stroke-width="1"/>
+<text x="138" y="380" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="middle">0</text>
+<line x1="313" y1="190" x2="313" y2="349" stroke="#dce3ec" stroke-width="1"/>
+<text x="313" y="380" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="middle">4000</text>
+<line x1="488" y1="190" x2="488" y2="349" stroke="#dce3ec" stroke-width="1"/>
+<text x="488" y="380" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="middle">8000</text>
+<text x="48" y="238" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">Before</text>
+<rect x="138" y="214" width="340.419" height="36" rx="0" fill="#94a2b7" stroke="none"/>
+<text x="491.419" y="240" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="22" font-weight="700" text-anchor="start">7,781</text>
+<text x="48" y="314" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">After</text>
+<rect x="138" y="290" width="155.312" height="36" rx="0" fill="#008875" stroke="none"/>
+<text x="306.312" y="316" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="22" font-weight="700" text-anchor="start">3,550</text>
+<text x="48" y="427" fill="#008875" font-family="Noto Sans, sans-serif" font-size="26" font-weight="700" text-anchor="start">54% fewer tokens</text>
+<text x="644" y="164" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="25" font-weight="700" text-anchor="start">LLM answer (s)</text>
+<line x1="734" y1="190" x2="734" y2="349" stroke="#dce3ec" stroke-width="1"/>
+<text x="734" y="380" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="middle">0</text>
+<line x1="874" y1="190" x2="874" y2="349" stroke="#dce3ec" stroke-width="1"/>
+<text x="874" y="380" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="middle">10</text>
+<line x1="1014" y1="190" x2="1014" y2="349" stroke="#dce3ec" stroke-width="1"/>
+<text x="1014" y="380" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="middle">20</text>
+<text x="644" y="238" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">Before</text>
+<rect x="734" y="214" width="318.374" height="36" rx="0" fill="#94a2b7" stroke="none"/>
+<text x="1065.37" y="240" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="22" font-weight="700" text-anchor="start">22.74 s</text>
+<text x="644" y="314" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">After</text>
+<rect x="734" y="290" width="139.552" height="36" rx="0" fill="#008875" stroke="none"/>
+<text x="886.552" y="316" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="22" font-weight="700" text-anchor="start">9.97 s</text>
+<text x="644" y="427" fill="#008875" font-family="Noto Sans, sans-serif" font-size="26" font-weight="700" text-anchor="start">56% less time</text>
+<text x="644" y="464" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="start">Full answer · median of 3 runs</text>
+</svg>

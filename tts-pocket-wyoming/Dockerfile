@@ -1,24 +1,16 @@
-FROM ghcr.io/astral-sh/uv:debian
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
-RUN git clone --depth 1 https://github.com/kyutai-labs/pocket-tts.git . && rm -rf .git
-COPY wyoming_tts_server.py tts_render_worker.py rust_tts_backend.py .
-
-# UV_TORCH_BACKEND has no effect on `uv add`/`uv lock`/`uv sync`/`uv run` —
-# it only applies to the `uv pip` / `uv tool` interfaces. For project
-# workflows, the CPU index has to be pinned in pyproject.toml instead.
-RUN printf '\n[[tool.uv.index]]\nname = "pytorch-cpu"\nurl = "https://download.pytorch.org/whl/cpu"\nexplicit = true\n\n[tool.uv.sources]\ntorch = { index = "pytorch-cpu" }\n' >> pyproject.toml
-
-RUN rm -f uv.lock
-RUN uv add "wyoming>=1.8,<2" zeroconf "num2words==0.5.14"
-RUN uv lock
-RUN uv sync --frozen --no-dev
-
-ENV WYOMING_PORT=10201
-ENV WYOMING_HOST=0.0.0.0
-ENV DEFAULT_VOICE=shefowl
-ENV PYTHONUNBUFFERED=1
-
+RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 libgomp1 libatomic1 && rm -rf /var/lib/apt/lists/*
+# Rust runs the model. Python only adapts Wyoming, text and PCM.
+RUN uv pip install --system numpy==2.2.6 wyoming==1.8.0 num2words==0.5.14
+COPY wyoming_tts_server.py tts_render_worker.py rust_tts_backend.py ./
+COPY assets/pocket-tts /app/pocket-tts-rust
+COPY assets/LICENSE /app/LICENSE-pocket-tts
+RUN /app/pocket-tts-rust --version
+ENV POCKET_TTS_RUST_BINARY=/app/pocket-tts-rust \
+    POCKET_TTS_RUST_CONFIG=/assets/config.yaml \
+    POCKET_TTS_RUST_REFERENCE=/assets/reference.wav \
+    HF_HUB_OFFLINE=1 \
+    PYTHONUNBUFFERED=1
 EXPOSE 10201
-
-CMD ["uv", "run", "--no-sync", "python", "wyoming_tts_server.py"]
+CMD ["python", "wyoming_tts_server.py", "--host", "0.0.0.0", "--port", "10201"]

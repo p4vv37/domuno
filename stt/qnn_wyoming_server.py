@@ -5,6 +5,9 @@ from concurrent.futures import ThreadPoolExecutor
 import functools
 import json
 import logging
+import math
+import uuid
+from datetime import datetime, timezone
 import signal
 from time import perf_counter
 from wyoming.asr import Transcribe, Transcript
@@ -15,36 +18,18 @@ from wyoming.server import AsyncEventHandler, AsyncServer
 
 LOG = logging.getLogger(__name__)
 MAX_BYTES = 16000 * 2 * 30
-ATTRIBUTION = Attribution(name='Qualcomm / OpenAI', url='https://huggingface.co/qualcomm/Whisper-Small')
-INFO = Info(asr=[AsrProgram(name='whisper-small-qnn-arduino', attribution=ATTRIBUTION,
-    installed=True, description='EXPERIMENTAL: Whisper Small FP16 on Arduino NPU', version='0.1',
-    models=[AsrModel(name='small-fp16-qnn', attribution=ATTRIBUTION, installed=True,
-        description='Multilingual Small, Polish, QNN HTP; not INT8', version='v0.66.0', languages=['pl'])],
+ATTRIBUTION = Attribution(
+    name='Qualcomm / OpenAI',
+    url='https://huggingface.co/qualcomm/Whisper-Large-V3-Turbo-Quantized')
+# Keep the legacy program name so existing HA pipelines keep the same identity.
+INFO = Info(asr=[AsrProgram(
+    name='whisper-small-qnn-arduino', attribution=ATTRIBUTION, installed=True,
+    description='EXPERIMENTAL: Whisper Large-v3-Turbo W8A16 on Arduino NPU', version='0.1',
+    models=[AsrModel(
+        name='large-v3-turbo-w8a16-qnn', attribution=ATTRIBUTION, installed=True,
+        description='Multilingual Large-v3-Turbo W8A16, Polish, QNN HTP',
+        version='v0.66.0', languages=['pl'])],
     requires_external_vad=True)])
-
-
-def info_for_profile(profile='small-fp16'):
-    """Keep HA's legacy program/entity identity while advertising the loaded model.
-
-    Transcribe.model remains advisory/ignored: existing HA pipelines can send the
-    legacy Small model ID; the explicitly constructed engine never switches models.
-    """
-    if profile == 'small-fp16':
-        return INFO
-    profiles = {
-        'medium-w8a16': ('Medium', 'Whisper-Medium-Quantized'),
-        'large-v3-turbo-w8a16': ('Large-v3-Turbo', 'Whisper-Large-V3-Turbo-Quantized'),
-    }
-    if profile not in profiles:
-        raise ValueError('Unsupported model profile')
-    label, repository = profiles[profile]
-    attribution = Attribution(name='Qualcomm / OpenAI',
-                              url='https://huggingface.co/qualcomm/' + repository)
-    return Info(asr=[AsrProgram(name='whisper-small-qnn-arduino', attribution=attribution,
-        installed=True, description=f'EXPERIMENTAL: Whisper {label} W8A16 on Arduino NPU', version='0.1',
-        models=[AsrModel(name=profile+'-qnn', attribution=attribution, installed=True,
-            description=f'Multilingual {label} W8A16, Polish, QNN HTP', version='v0.66.0', languages=['pl'])],
-        requires_external_vad=True)])
 
 
 def pcm_decode(raw):
@@ -87,6 +72,26 @@ class State:
             self.pool.submit(self.engine.close).result(timeout=40)
         finally:
             self.pool.shutdown(wait=True, cancel_futures=True)
+
+
+def emit_stt_metric(started, outcome, audio_s, result=None, queue_ms=None):
+    """Log only timing fields, never transcript, tokens or exception messages."""
+    try:
+        record = {'schema_version': 1, 'service': 'stt',
+                  'request_id': uuid.uuid4().hex,
+                  'timestamp': datetime.now(timezone.utc).isoformat(),
+                  'outcome': outcome, 'audio_s': audio_s,
+                  'total_ms': (perf_counter() - started) * 1000,
+                  'queue_ms': queue_ms}
+        timings = (result or {}).get('timings_seconds') or {}
+        for source, target in (('preprocess', 'preprocess_ms'), ('encoder', 'encoder_ms'),
+                               ('decoder_total', 'decode_ms'), ('total', 'engine_ms')):
+            value = timings.get(source)
+            record[target] = (value * 1000 if type(value) in (int, float)
+                              and math.isfinite(value) and value >= 0 else None)
+        LOG.info('stt_metric %s', json.dumps(record, separators=(',', ':')))
+    except Exception:
+        pass
 
 
 class Handler(AsyncEventHandler):
@@ -136,27 +141,37 @@ class Handler(AsyncEventHandler):
             try:
                 await asyncio.wait_for(self.state.lock.acquire(), timeout=2)
             except asyncio.TimeoutError:
+                emit_stt_metric(began, 'busy', len(raw)/32000)
                 return await self.fail('busy', 'NPU STT is busy; retry later')
+            except asyncio.CancelledError:
+                emit_stt_metric(began, 'cancelled', len(raw)/32000)
+                raise
+            queue_ms = (perf_counter() - began) * 1000
+            outcome, result = 'error', None
             try:
                 def transcribe():
                     return self.state.engine.transcribe(self.state.decode(raw))
                 future = asyncio.get_running_loop().run_in_executor(self.state.pool, transcribe)
                 result = await _finish_worker(future)
                 await self.write_event(Transcript(text=result['text'].strip()).event())
-                LOG.info('STT completed in %.3f s; samples=%d', perf_counter()-began, len(raw)//2)
+                outcome = 'completed'
+            except asyncio.CancelledError:
+                outcome = 'cancelled'
+                raise
             except Exception:
                 LOG.error('STT_PHASE transcription-failed')
                 return await self.fail('transcription-failed', 'QNN transcription failed; inspect server log')
             finally:
                 self.state.lock.release()
+                emit_stt_metric(began, outcome, len(raw)/32000, result, queue_ms)
         return True
 
 
 async def serve(args):
     from qnn_whisper_engine import QnnWhisperEngine
-    engine = QnnWhisperEngine(model_dir=args.model_dir, tokenizer=args.tokenizer, backend=args.backend,
-                              model_profile=args.model_profile, metadata=args.metadata)
-    state = State(engine, info=info_for_profile(args.model_profile))
+    engine = QnnWhisperEngine(model_dir=args.model_dir, tokenizer=args.tokenizer,
+                              backend=args.backend, metadata=args.metadata)
+    state = State(engine)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -179,8 +194,7 @@ async def serve(args):
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--uri',default='tcp://0.0.0.0:10301')
-    p.add_argument('--model-profile', choices=['small-fp16','medium-w8a16','large-v3-turbo-w8a16'], default='small-fp16')
-    p.add_argument('--metadata', help='Public artifact metadata required for explicit W8A16 profile')
+    p.add_argument('--metadata', required=True, help='Public Turbo artifact metadata')
     for name in ['model-dir','tokenizer','backend']:
         p.add_argument('--'+name,required=True)
     args = p.parse_args(argv)

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="790" viewBox="0 0 1200 790" role="img" aria-labelledby="title desc">
+<title id="title">One board. Three local models.</title>
+<desc id="desc">Home Assistant exchanges audio with Linux Voice Assistant and calls STT, the LLM agent and TTS. LVA and all AI services run on VENTUNO Q. All results return to HA. Only HA executes device actions.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#728198" stroke-width="1.5"/></marker></defs>
+<rect x="0" y="0" width="1200" height="790" rx="0" fill="#f8fafc" stroke="none"/>
+<text x="48" y="61" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="34" font-weight="700" text-anchor="start">One board. Three local models.</text>
+<text x="48" y="100" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="21" font-weight="400" text-anchor="start">Home Assistant coordinates every stage of the conversation.</text>
+<rect x="421" y="135" width="731" height="608" rx="18" fill="#eff3fa" stroke="#dce3ec"/>
+<text x="451" y="174" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="24" font-weight="700" text-anchor="start">Arduino VENTUNO Q</text>
+<text x="451" y="201" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="19" font-weight="400" text-anchor="start">LVA + local AI services</text>
+<rect x="48" y="394" width="280" height="134" rx="14" fill="#17263c" stroke="none"/>
+<text x="188" y="433" fill="#ffffff" font-family="Noto Sans, sans-serif" font-size="27" font-weight="700" text-anchor="middle">Home Assistant</text>
+<text x="188" y="469" fill="#dbe5f4" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="middle">Conversation flow</text>
+<text x="188" y="499" fill="#dbe5f4" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="middle">Device actions</text>
+<line x1="328" y1="461" x2="382" y2="461" stroke="#728198" stroke-width="2.5"/>
+<line x1="382" y1="281" x2="382" y2="674" stroke="#728198" stroke-width="2.5"/>
+<rect x="451" y="233" width="671" height="96" rx="12" fill="#ffffff" stroke="#dce3ec"/>
+<text x="475" y="270" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="25" font-weight="700" text-anchor="start">Linux Voice Assistant</text>
+<text x="475" y="303" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">Microphone · “Okay Nabu” · playback</text>
+<rect x="1028" y="255" width="72" height="34" rx="7" fill="#e6ecf5" stroke="none"/>
+<text x="1064" y="279" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="700" text-anchor="middle">LVA</text>
+<line x1="382" y1="281" x2="442" y2="281" stroke="#728198" stroke-width="2.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<rect x="451" y="349" width="671" height="96" rx="12" fill="#ffffff" stroke="#dce3ec"/>
+<text x="475" y="386" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="25" font-weight="700" text-anchor="start">Whisper Large-v3-Turbo</text>
+<text x="475" y="419" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">STT · speech to text</text>
+<rect x="1028" y="371" width="72" height="34" rx="7" fill="#e7edff" stroke="none"/>
+<text x="1064" y="395" fill="#4164df" font-family="Noto Sans, sans-serif" font-size="18" font-weight="700" text-anchor="middle">NPU</text>
+<line x1="382" y1="397" x2="442" y2="397" stroke="#728198" stroke-width="2.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<rect x="451" y="465" width="671" height="130" rx="12" fill="#ffffff" stroke="#dce3ec"/>
+<text x="475" y="502" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="25" font-weight="700" text-anchor="start">LLM agent</text>
+<text x="475" y="535" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">Router (CPU) for simple commands</text>
+<text x="475" y="568" fill="#4164df" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">Qwen2.5-3B (NPU) for other requests</text>
+<line x1="382" y1="530" x2="442" y2="530" stroke="#728198" stroke-width="2.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<rect x="451" y="626" width="671" height="96" rx="12" fill="#ffffff" stroke="#dce3ec"/>
+<text x="475" y="663" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="25" font-weight="700" text-anchor="start">Pocket TTS Polish</text>
+<text x="475" y="696" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">TTS · text to speech · Rust</text>
+<rect x="1028" y="648" width="72" height="34" rx="7" fill="#e2f3ed" stroke="none"/>
+<text x="1064" y="672" fill="#008875" font-family="Noto Sans, sans-serif" font-size="18" font-weight="700" text-anchor="middle">CPU</text>
+<line x1="382" y1="674" x2="442" y2="674" stroke="#728198" stroke-width="2.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+</svg>

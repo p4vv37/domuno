@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Pinned GenieX v0.9.3 gateway; stdlib only, never executes HA tools.
+"""GenieX v0.11.0 gateway with optional v0.9.3 compatibility; stdlib only, never executes HA tools.
 
-Only model catalog and chat completions are exposed. SSE is passed through
-without parsing or buffering the full response. LAN listener is unauthenticated
-unless QWEN_GATEWAY_API_KEY is set. Do not expose it to the public Internet.
+Only model catalog and chat completions are exposed. SSE bytes are forwarded
+unchanged, with optional bounded observation for payload-free metrics.
+The LAN listener is unauthenticated unless QWEN_GATEWAY_API_KEY is set. Do not expose it to the public Internet.
 """
 import argparse
 import hmac
@@ -12,36 +12,33 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import stat
+import socket
 import sys
 import logging
 from logging.handlers import RotatingFileHandler
-from datetime import datetime, timezone
 import time
 import uuid
 import threading
 from urllib.parse import urlsplit
+from datetime import datetime
+
+from qwen_metrics import RequestMetrics, ResponseObserver
 
 MODEL = 'bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_0'
 MAX_BODY = 2 * 1024 * 1024
-# v0.9.3 returns an empty stop/zero tokens when the exact prompt is repeated.
-# A tiny internal, tool-free turn forces its session-key reset without unloading
-# weights or modifying the real HA prompt. Its output is discarded, never acted on.
+# Legacy v0.9.3 can return an empty response for an identical prompt. The
+# explicit reset policy inserts a tool-free turn to discard the previous long
+# prefix. The default reuse policy sends only the real request on v0.11.0.
 RESET_MESSAGES = [{'role': 'system', 'content': 'Internal cache reset. Reply OK.'},
                   {'role': 'user', 'content': '.'}]
 
 
-def normalize_request(body, model=MODEL, nctx=4096, runtime='llama_cpp'):
+def normalize_request(body, model=MODEL, nctx=4096):
     if not isinstance(body, dict) or not isinstance(body.get('messages'), list):
         raise ValueError('messages must be an array')
     body = dict(body)
     # No caller may redirect compute, enable thinking or enlarge the context.
-    if runtime not in ('llama_cpp', 'qairt'):
-        raise ValueError('Unsupported runtime profile')
-    # QAIRT context length is compiled into the bundle; positive nctx/ngl
-    # are llama.cpp-only knobs and are rejected by its plugin.
-    body.update(model=model, compute='npu' if runtime == 'qairt' else 'HTP0',
-                ngl=0 if runtime == 'qairt' else -1,
-                nctx=0 if runtime == 'qairt' else nctx,
+    body.update(model=model, compute='HTP0', ngl=-1, nctx=nctx,
                 enable_think=False, thinking=False, temperature=0.1, top_k=1, seed=42,
                 repetition_penalty=1.0, presence_penalty=0.0,
                 frequency_penalty=0.0)
@@ -59,24 +56,47 @@ def normalize_request(body, model=MODEL, nctx=4096, runtime='llama_cpp'):
     return body
 
 
-RESPONSE_CAPTURE_LIMIT = 64 * 1024
-RESPONSE_LOG_MAX_BYTES = 5 * 1024 * 1024
+VOICE_STYLE = (
+    "Voice response style: answer in the user's language. Use one short sentence "
+    "unless the user explicitly requests more detail. For tool calls, include "
+    "schema-required arguments and selectors needed to identify the target "
+    "unambiguously. Omit empty optional arguments and never invent values. "
+    "Confirm an action only after receiving its tool result."
+)
+
+
+def apply_response_style(body):
+    """Prepend a stable instruction without changing the caller's messages."""
+    body = dict(body)
+    messages = list(body['messages'])
+    for index, message in enumerate(messages):
+        if isinstance(message, dict) and message.get('role') == 'system' and isinstance(message.get('content'), str):
+            messages[index] = {**message, 'content': VOICE_STYLE + '\n\n' + message['content']}
+            break
+    else:
+        messages.insert(0, {'role': 'system', 'content': VOICE_STYLE})
+    body['messages'] = messages
+    return body
+
+
+LOG_MAX_BYTES = 5 * 1024 * 1024
 
 
 def _log_warning():
-    print('WARNING: private response logging unavailable', file=sys.stderr, flush=True)
+    print('WARNING: private log unavailable', file=sys.stderr, flush=True)
 
 
 def _log_audit_warning():
     print('WARNING: private context audit unavailable', file=sys.stderr, flush=True)
 
 
-def _log_shadow_warning():
-    print('WARNING: private decision shadow unavailable', file=sys.stderr, flush=True)
+def _log_decision_warning():
+    print('WARNING: private decision log unavailable', file=sys.stderr, flush=True)
 
 
 class _PrivateRotatingHandler(RotatingFileHandler):
-    def __init__(self, filename, **kwargs):
+    def __init__(self, filename, warn=_log_warning, **kwargs):
+        self.warn = warn
         self._secure_paths(os.path.abspath(filename))
         super().__init__(filename, **kwargs)
 
@@ -110,16 +130,17 @@ class _PrivateRotatingHandler(RotatingFileHandler):
         super().doRollover()
 
     def handleError(self, record):
-        _log_warning()
+        self.warn()
 
 
-class ResponseLogger:
-    """Opt-in, response-only JSONL sink. One instance per private directory.
+class JsonlLogger:
+    """Bounded JSONL sink for one private directory.
 
     Directory is a trusted CLI path; do not share it with other processes.
     Failures disable/drop logging, never inference. No root logging handlers.
     """
-    filename = 'responses.jsonl'
+    filename = ''
+    ensure_ascii = True
     warn = staticmethod(_log_warning)
 
     def __init__(self, directory):
@@ -131,8 +152,8 @@ class ResponseLogger:
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
                 raise OSError('Unsafe log directory')
             self.handler = _PrivateRotatingHandler(
-                os.path.join(path, self.filename), maxBytes=RESPONSE_LOG_MAX_BYTES,
-                backupCount=2, encoding='utf-8')
+                os.path.join(path, self.filename), maxBytes=LOG_MAX_BYTES,
+                backupCount=2, warn=self.warn, encoding='utf-8')
             self.handler.setFormatter(logging.Formatter('%(message)s'))
         except Exception:
             self.warn()
@@ -140,7 +161,7 @@ class ResponseLogger:
     def write(self, record):
         try:
             if self.handler is not None:
-                text = json.dumps(record, ensure_ascii=True, separators=(',', ':'))
+                text = json.dumps(record, ensure_ascii=self.ensure_ascii, separators=(',', ':'))
                 self.handler.handle(logging.LogRecord('private-response', logging.INFO, '', 0, text, (), None))
         except Exception:
             self.warn()
@@ -150,16 +171,88 @@ class ResponseLogger:
             self.handler.close()
 
 
-class DecisionShadowLogger(ResponseLogger):
-    """Metadata-only decision log. Payload filtering belongs to sanitize()."""
-    filename = 'decision-shadow.jsonl'
-    warn = staticmethod(_log_shadow_warning)
-
-
-class ContextAuditLogger(ResponseLogger):
-    """Context-format summary, without names, IDs or prompts."""
+class ContextAuditLogger(JsonlLogger):
+    """Context-format summary and fingerprints, without names, IDs or prompts."""
     filename = 'context-audit.jsonl'
     warn = staticmethod(_log_audit_warning)
+
+
+class RequestCaptureLogger(JsonlLogger):
+    """Opt-in full normalized requests, capped per gateway process."""
+    filename = 'request-capture.jsonl'
+    ensure_ascii = False  # Keep a full bounded UTF-8 request below the file limit.
+    warn = staticmethod(_log_audit_warning)
+
+    def __init__(self, directory, limit=5):
+        self.remaining = limit
+        self.lock = threading.Lock()
+        super().__init__(directory)
+
+    def write(self, record):
+        with self.lock:
+            if self.remaining <= 0:
+                return
+            self.remaining -= 1
+            super().write(record)
+
+
+def configured_log_directory(directory, switch):
+    """An explicit CLI path opts in unless EnvironmentFile disables the log."""
+    value = os.environ.get(switch)
+    if value not in (None, '0', '1'):
+        raise ValueError(switch + ' must be 0 or 1')
+    if value == '0':
+        return None
+    if value == '1' and not directory:
+        raise ValueError(switch + ' requires its log directory argument')
+    return directory
+
+
+class MetricsLogger(JsonlLogger):
+    """Payload-free request summaries."""
+    filename = 'metrics.jsonl'
+
+    @staticmethod
+    def warn():
+        print('WARNING: metrics logging unavailable', file=sys.stderr, flush=True)
+
+
+class RouterMissLogger(JsonlLogger):
+    """Explicitly enabled private transcripts, with an optional fixed cutoff."""
+    filename = 'router-misses.jsonl'
+
+    @staticmethod
+    def warn():
+        print('WARNING: private router miss logging unavailable', file=sys.stderr, flush=True)
+
+    def __init__(self, directory, until=None, clock=time.time):
+        self.until, self.clock = until, clock
+        super().__init__(directory)
+
+    def write(self, record):
+        if self.until is None or self.clock() < self.until:
+            super().write(record)
+
+
+def router_miss_logger(directory, until=None):
+    """EnvironmentFile settings are read on every gateway start, without setup."""
+    enabled = os.environ.get('ROUTER_MISS_LOGGING', '0')
+    if enabled not in ('0', '1'):
+        raise ValueError('ROUTER_MISS_LOGGING must be 0 or 1')
+    # An explicit CLI directory opts in when the environment has no switch.
+    if enabled == '0' and 'ROUTER_MISS_LOGGING' in os.environ:
+        return None
+    if not directory:
+        if enabled == '1':
+            raise ValueError('Router miss logging requires a log directory')
+        return None
+    cutoff = until if until is not None else os.environ.get('ROUTER_MISS_UNTIL', '')
+    if cutoff:
+        parsed = datetime.fromisoformat(cutoff.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            raise ValueError('ROUTER_MISS_UNTIL requires an explicit timezone')
+        cutoff = parsed.timestamp()
+    return RouterMissLogger(directory, cutoff if cutoff != '' else None)
 
 
 def _new_chat_id():
@@ -220,17 +313,29 @@ def build_clarify_sse(text):
     return ''.join('data: %s\n\n' % json.dumps(e, ensure_ascii=False) for e in events) + 'data: [DONE]\n\n'
 
 
-def make_handler(upstream, model=MODEL, nctx=4096, api_key='', runtime='llama_cpp', prompt_counter=None, response_logger=None, context_auditor=None, context_audit_fn=None, decision_shadow=None, decision_fn=None, decide_apply=False, clarify_text=None, sanitize_fn=None):
+def make_handler(upstream, model=MODEL, nctx=4096, api_key='', prompt_counter=None, context_auditor=None, context_audit_fn=None, decision_fn=None, decide_apply=False, clarify_text=None, metrics_logger=None, backend_version='unknown', metrics_profile='default', cache_policy='reuse', response_style='concise', router_miss_logger=None, request_capture=None, agent_language='pl', wait_sound=None):
+    if response_style not in ('concise', 'original'):
+        raise ValueError('response_style must be concise or original')
+    if cache_policy not in ('reuse', 'reset'):
+        raise ValueError('cache_policy must be reuse or reset')
     target = urlsplit(upstream)
     if target.scheme != 'http' or not target.hostname or not target.port:
         raise ValueError('upstream must be http://host:port')
     gate = threading.BoundedSemaphore(1)
+    run_id = uuid.uuid4().hex
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.0'  # EOF frames both SSE and ordinary responses.
         server_version = 'QwenNpuGateway/1'
 
+        def send_response(self, code, message=None):
+            if getattr(self, 'metrics', None) is not None:
+                self.metrics.record['status'] = code
+            super().send_response(code, message)
+
         def error_json(self, status, message):
+            if getattr(self, 'metrics', None) is not None:
+                self.metrics.record['outcome'] = 'rejected' if status < 500 else 'backend_error'
             data = json.dumps({'error': {'message': message}}).encode()
             self.send_response(status)
             self.send_header('Content-Type', 'application/json')
@@ -293,6 +398,22 @@ def make_handler(upstream, model=MODEL, nctx=4096, api_key='', runtime='llama_cp
                 self.error_json(404, 'Not found')
 
         def do_POST(self):
+            self.metrics = RequestMetrics(backend_version, metrics_profile)
+            self.metrics.record.update(run_id=run_id, model=model, runtime='llama_cpp',
+                                       nctx=nctx, cache_policy=cache_policy, response_style=response_style,
+                                       agent_language=agent_language)
+            try:
+                self._post()
+            except (BrokenPipeError, ConnectionResetError):
+                self.metrics.record['outcome'] = 'client_disconnected'
+            except Exception:
+                self.metrics.record['outcome'] = 'error'
+                raise
+            finally:
+                if metrics_logger is not None:
+                    self.metrics.finish(metrics_logger)
+
+        def _post(self):
             if not self.allowed():
                 return
             if self.path != '/v1/chat/completions':
@@ -307,52 +428,84 @@ def make_handler(upstream, model=MODEL, nctx=4096, api_key='', runtime='llama_cp
                 raw = self.rfile.read(length)
                 if len(raw) != length:
                     raise ValueError('Incomplete request')
-                body = normalize_request(json.loads(raw), model, nctx, runtime)
+                body = normalize_request(json.loads(raw), model, nctx)
+                if response_style == 'concise':
+                    body = apply_response_style(body)
+                self.metrics.record['stream'] = bool(body.get('stream'))
+                self.metrics.record['tool_count'] = len(body['tools']) if isinstance(body.get('tools'), list) else 0
                 payload = json.dumps(body, ensure_ascii=False).encode()
             except (ValueError, UnicodeError, OSError) as exc:
                 self.error_json(400, str(exc))
                 return
-            # Optional private context audit: presence/format summary only.
+            # Optional private context audit: format and JSON fingerprints.
             # Computed from the normalized messages and written before the
             # budget gate so every incoming request is summarized. It never
             # touches the response bytes and never records prompt content.
-            request_id = None
-            timestamp = None
-            if context_auditor is not None or response_logger is not None or decision_shadow is not None:
-                request_id = uuid.uuid4().hex
-                timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-            if context_auditor is not None:
+            request_id = self.metrics.record['request_id']
+            timestamp = self.metrics.record['timestamp']
+            # Capture before routing so local refusals can be diagnosed too.
+            # This is opt-in, private and bounded by the per-process sample cap.
+            if request_capture is not None:
+                capture_started = time.perf_counter()
                 try:
-                    context_auditor.write({'request_id': request_id, 'timestamp': timestamp,
-                                           **context_audit_fn(body['messages'])})
+                    request_capture.write({'schema_version': 1, 'service': 'request-capture',
+                                           'request_id': request_id, 'timestamp': timestamp,
+                                           'run_id': run_id, 'body': body})
                 except Exception:
                     _log_audit_warning()
-            # Decision module: compute now (for shadow and/or apply).
+                finally:
+                    self.metrics.record['capture_ms'] = self.metrics.elapsed(capture_started)
+            if context_auditor is not None:
+                audit_started = time.perf_counter()
+                try:
+                    context_auditor.write({'request_id': request_id, 'timestamp': timestamp,
+                                           'run_id': run_id, 'model': model,
+                                           'agent_language': agent_language,
+                                           'cache_policy': cache_policy, 'response_style': response_style,
+                                           **context_audit_fn(body)})
+                except Exception:
+                    _log_audit_warning()
+                finally:
+                    self.metrics.record['audit_ms'] = self.metrics.elapsed(audit_started)
+            # Decision module: compute when applying or collecting missed commands.
             decision = None
-            if decision_shadow is not None or decide_apply:
+            stage = time.perf_counter()
+            if decide_apply or router_miss_logger is not None:
                 try:
                     decision = decision_fn(body)
                 except Exception:
-                    _log_shadow_warning()
+                    _log_decision_warning()
+            self.metrics.record['router_ms'] = self.metrics.elapsed(stage)
+            if router_miss_logger is not None and decision is not None and decision.kind.value == 'pass':
+                try:
+                    last = body['messages'][-1] if body['messages'] else {}
+                    utterance = last.get('content') if last.get('role') == 'user' else None
+                    if isinstance(utterance, list):
+                        utterance = ' '.join(part['text'] for part in utterance
+                                             if isinstance(part, dict) and part.get('type') == 'text'
+                                             and isinstance(part.get('text'), str))
+                    if not isinstance(utterance, str):
+                        utterance = None
+                    if utterance:
+                        router_miss_logger.write({
+                            'schema_version': 1, 'request_id': request_id, 'timestamp': timestamp,
+                            'reason': decision.reason, 'utterance': utterance[:512],
+                            'truncated': len(utterance) > 512})
+                except Exception:
+                    _log_decision_warning()
             # Apply: route recognized HA commands + acks without the LLM.
             if decide_apply and decision is not None and decision.kind.value in ('toolcall', 'clarify', 'ack'):
+                self.metrics.record.update(route=decision.kind.value, outcome='completed',
+                                           response_kind='toolcall' if decision.kind.value == 'toolcall' else 'text')
                 self.send_router_decision(decision, body)
-                if decision_shadow is not None:
-                    try:
-                        decision_shadow.write({
-                            'request_id': request_id, 'timestamp': timestamp,
-                            'total_ms': round((time.monotonic() - began_total) * 1000),
-                            'inference_ms': 0,
-                            'status': 200, 'stream': bool(body.get('stream')),
-                            **sanitize_fn(decision)})
-                    except Exception:
-                        _log_shadow_warning()
                 return
-            # A configured counter must count the FULL rendered template/tools.
-            # Fail closed before even the internal reset touches the native SDK.
-            # Legacy profiles without a counter retain their previous behaviour;
-            # guarded deployments must explicitly configure a verified counter.
+            # The counter must count the FULL rendered template/tools. It fails
+            # closed before even the internal reset touches the native SDK.
+            # main() always configures one; tests may inject None to isolate the
+            # proxy without a tokenizer.
+            self.metrics.record['route'] = 'llm'
             if prompt_counter is not None:
+                stage = time.perf_counter()
                 try:
                     prompt_tokens = prompt_counter(body)
                     if type(prompt_tokens) is not int or prompt_tokens < 0:
@@ -368,32 +521,56 @@ def make_handler(upstream, model=MODEL, nctx=4096, api_key='', runtime='llama_cp
                     reason = str(exc) if str(exc) in categories else 'counter failure'
                     print('BUDGET_REJECT: ' + reason, flush=True)
                     self.error_json(503, 'Prompt budget verification unavailable; native backend was not contacted')
+                    self.metrics.record['outcome'] = 'rejected'
                     return
+                finally:
+                    self.metrics.record['budget_ms'] = self.metrics.elapsed(stage)
+                self.metrics.record['estimated_prompt_tokens'] = prompt_tokens
                 required = prompt_tokens + body['max_completion_tokens'] + 64
                 if required > nctx:
                     self.error_json(413, 'Context budget exceeded: prompt=%d, output=%d, reserve=64, context=%d; native backend was not contacted' %
                                     (prompt_tokens, body['max_completion_tokens'], nctx))
                     return
-            if not gate.acquire(timeout=30):
+            stage = time.perf_counter()
+            acquired = gate.acquire(timeout=30)
+            self.metrics.record['queue_ms'] = self.metrics.elapsed(stage)
+            if not acquired:
                 self.error_json(429, 'One inference is already running; retry later')
                 return
             conn = http.client.HTTPConnection(target.hostname, target.port, timeout=180)
             started = False
-            capture = bytearray() if response_logger is not None else None
             response_status = None
             complete = False
-            truncated = False
             began = time.monotonic()
+            reset_started = None
+            backend_started = None
+            observer = None
+            self.metrics.record['outcome'] = 'backend_error'
             try:
-                reset = normalize_request({'messages': RESET_MESSAGES, 'stream': False,
-                                           'max_tokens': 1}, model, nctx, runtime)
-                conn.request('POST', '/v1/chat/completions', body=json.dumps(reset).encode(),
-                             headers={'Content-Type': 'application/json'})
-                reset_response = conn.getresponse()
-                reset_body = reset_response.read(MAX_BODY + 1)
-                if reset_response.status != 200 or len(reset_body) > MAX_BODY:
-                    self.error_json(502, 'Backend cache reset failed')
-                    return
+                if cache_policy == 'reset':
+                    reset_started = time.perf_counter()
+                    reset = normalize_request({'messages': RESET_MESSAGES, 'stream': False,
+                                               'max_tokens': 1}, model, nctx)
+                    conn.request('POST', '/v1/chat/completions', body=json.dumps(reset).encode(),
+                                 headers={'Content-Type': 'application/json'})
+                    reset_response = conn.getresponse()
+                    reset_body = reset_response.read(MAX_BODY + 1)
+                    self.metrics.record['reset_ms'] = self.metrics.elapsed(reset_started)
+                    if reset_response.status != 200 or len(reset_body) > MAX_BODY:
+                        self.error_json(502, 'Backend cache reset failed')
+                        return
+                if wait_sound is not None:
+                    sound_started = time.perf_counter()
+                    try:
+                        self.metrics.record['wait_sound_started'] = bool(wait_sound.play())
+                    except Exception:
+                        self.metrics.record['wait_sound_started'] = False
+                        print('WARNING: LLM waiting sound failed; inference is unchanged', file=sys.stderr)
+                    finally:
+                        self.metrics.record['wait_sound_ms'] = self.metrics.elapsed(sound_started)
+                backend_started = time.perf_counter()
+                if metrics_logger is not None:
+                    observer = ResponseObserver(bool(body.get('stream')))
                 conn.request('POST', '/v1/chat/completions', body=payload,
                              headers={'Content-Type': 'application/json', 'Accept-Encoding': 'identity'})
                 response = conn.getresponse()
@@ -414,47 +591,59 @@ def make_handler(upstream, model=MODEL, nctx=4096, api_key='', runtime='llama_cp
                     if not chunk:
                         complete = response.length in (None, 0)
                         break
-                    if capture is not None:
-                        remaining = RESPONSE_CAPTURE_LIMIT - len(capture)
-                        capture.extend(chunk[:remaining])
-                        truncated = truncated or len(chunk) > remaining
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
+                    if observer is not None:
+                        try:
+                            observer.feed(chunk)
+                        except Exception:
+                            observer._invalidate()
+                    try:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                    except OSError:
+                        self.metrics.record['outcome'] = 'client_disconnected'
+                        raise
+                self.metrics.record['outcome'] = ('completed' if complete and response_status == 200 else 'backend_error')
             except (OSError, http.client.HTTPException) as exc:
                 # Never append JSON to an already-started SSE stream.
                 if not started:
                     self.error_json(502, 'Backend unavailable: ' + type(exc).__name__)
             finally:
+                if backend_started is not None:
+                    self.metrics.record['backend_ms'] = self.metrics.elapsed(backend_started)
+                elif reset_started is not None and self.metrics.record['reset_ms'] is None:
+                    self.metrics.record['reset_ms'] = self.metrics.elapsed(reset_started)
+                if observer is not None:
+                    try:
+                        observation = observer.finish()
+                        self.metrics.record.update(observation)
+                        if self.metrics.record['outcome'] == 'completed':
+                            if not observation['observation_complete']:
+                                self.metrics.record['outcome'] = 'unverified'
+                            elif observation['response_kind'] == 'empty':
+                                self.metrics.record['outcome'] = 'empty'
+                            elif observation.get('finish_reason') in ('length', 'content_filter'):
+                                self.metrics.record['outcome'] = 'incomplete'
+                    except Exception:
+                        if self.metrics.record['outcome'] == 'completed':
+                            self.metrics.record['outcome'] = 'unverified'
                 conn.close()
                 self.close_connection = True
                 gate.release()
-                total_ms = round((time.monotonic() - began_total) * 1000)
-                inference_ms = round((time.monotonic() - began) * 1000)
-                if capture is not None and response_status is not None:
-                    try:
-                        response_logger.write({
-                            'request_id': request_id, 'timestamp': timestamp,
-                            'status': response_status, 'stream': bool(body.get('stream')),
-                            'truncated': truncated, 'complete': complete,
-                            'elapsed_ms': inference_ms, 'total_ms': total_ms,
-                            'response': capture.decode('utf-8', errors='replace')})
-                    except Exception:
-                        _log_warning()
-                if decision_shadow is not None and decision is not None:
-                    try:
-                        decision_shadow.write({
-                            'request_id': request_id, 'timestamp': timestamp,
-                            'total_ms': total_ms, 'inference_ms': inference_ms,
-                            'status': response_status, 'stream': bool(body.get('stream')),
-                            **sanitize_fn(decision)})
-                    except Exception:
-                        _log_shadow_warning()
-
         def log_message(self, fmt, *args):
             # Do not log prompts, headers, API keys or tool arguments.
             print('%s %s' % (self.log_date_time_string(), fmt % args), flush=True)
 
     return Handler
+
+
+def notify_ready():
+    """Signal systemd only after language warmup and binding the HTTP socket."""
+    address = os.environ.get('NOTIFY_SOCKET')
+    if address:
+        if address.startswith('@'):
+            address = '\0' + address[1:]
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notification:
+            notification.sendto(b'READY=1', address)
 
 
 def main():
@@ -464,13 +653,23 @@ def main():
     parser.add_argument('--upstream', default='http://127.0.0.1:18192')
     parser.add_argument('--model', default=MODEL)
     parser.add_argument('--nctx', type=int, default=4096)
-    parser.add_argument('--runtime', choices=('llama_cpp', 'qairt'), default='llama_cpp')
+    parser.add_argument('--agent-language', choices=('pl', 'en'), default=os.environ.get('AGENT_LANGUAGE', 'pl'))
+    parser.add_argument('--response-style', choices=('concise', 'original'), default='concise')
+    parser.add_argument('--router-miss-log-dir', help='Opt-in private user transcripts for PASS decisions')
+    parser.add_argument('--router-miss-until', help='Optional fixed transcript cutoff, overriding ROUTER_MISS_UNTIL')
+    parser.add_argument('--cache-policy', choices=('reuse', 'reset'), default='reuse',
+                        help='Reuse KV on GenieX 0.11.0, or insert the legacy reset turn')
+    parser.add_argument('--metrics-dir', help='Payload-free rotating request metrics (3 x 5 MiB)')
+    parser.add_argument('--backend-version', default=os.environ.get('METRICS_BACKEND_VERSION', 'unknown'), help='Operator-supplied runtime version label')
+    parser.add_argument('--metrics-profile', default=os.environ.get('METRICS_PROFILE', 'default'), help='Operator-supplied comparison profile')
     parser.add_argument('--prompt-counter-url', help='Loopback CPU prompt-budget service')
-    parser.add_argument('--response-log-dir', help='Opt-in private response/tool-argument JSONL directory (0700; 3 x 5 MiB; captures 64 KiB per response)')
-    parser.add_argument('--context-audit-dir', help='Opt-in private HA context-audit JSONL directory (0700; presence/format summary only; never stores prompts)')
-    parser.add_argument('--decide-shadow-dir', help='Opt-in private decision-module shadow JSONL directory (0700; observes routing, never changes responses)')
+    parser.add_argument('--context-audit-dir', help='Private format/fingerprint audit directory, controlled by CONTEXT_AUDIT')
+    parser.add_argument('--request-capture-dir', help='Opt-in full normalized requests, controlled by CONTEXT_CAPTURE')
+    parser.add_argument('--request-capture-limit', help='Capture at most 1-20 incoming requests per process, overriding CONTEXT_CAPTURE_LIMIT')
     parser.add_argument('--decide-apply', action='store_true', help='Route recognized HA commands via the decision module instead of the LLM (default off)')
     args = parser.parse_args()
+    if args.agent_language not in ('pl', 'en'):
+        parser.error('AGENT_LANGUAGE must be pl or en')
     if not 2048 <= args.nctx <= 10240:
         parser.error('nctx must be between 2048 and 10240')
     counter = None
@@ -485,33 +684,51 @@ def main():
                 headers={'Content-Type': 'application/json'})
             with urllib.request.urlopen(request, timeout=15) as response:
                 return json.load(response)['prompt_upper_bound']
-    if args.nctx > 4096 and counter is None:
-        parser.error('Large-context deployment requires an explicit budget guard')
+    if counter is None:
+        parser.error('A prompt counter is required: set GGUF + TOKENIZER or pass --prompt-counter-url')
+    try:
+        from qwen_wait_sound import from_environment as wait_sound_from_environment
+        wait_sound = wait_sound_from_environment()
+        miss_logger = router_miss_logger(args.router_miss_log_dir, args.router_miss_until)
+        audit_dir = configured_log_directory(args.context_audit_dir, 'CONTEXT_AUDIT')
+        capture_dir = configured_log_directory(args.request_capture_dir, 'CONTEXT_CAPTURE')
+        capture_limit = int(args.request_capture_limit or os.environ.get('CONTEXT_CAPTURE_LIMIT', '5'))
+        if not 1 <= capture_limit <= 20:
+            raise ValueError('CONTEXT_CAPTURE_LIMIT must be between 1 and 20')
+    except ValueError as exc:
+        parser.error(str(exc))
     key = os.environ.get('QWEN_GATEWAY_API_KEY', '')
-    response_logger = ResponseLogger(args.response_log_dir) if args.response_log_dir else None
+    metrics_logger = MetricsLogger(args.metrics_dir) if args.metrics_dir else None
     context_auditor = None
     context_audit_fn = None
-    if args.context_audit_dir:
-        from qwen_context_catalog import audit_context
-        context_audit_fn = audit_context
-        context_auditor = ContextAuditLogger(args.context_audit_dir)
-    decision_shadow = None
+    if audit_dir:
+        from qwen_context_catalog import audit_request
+        context_audit_fn = audit_request
+        context_auditor = ContextAuditLogger(audit_dir)
+    request_capture = RequestCaptureLogger(capture_dir, capture_limit) if capture_dir else None
     decision_fn = None
-    sanitize_fn = None
     clarify_fn = None
-    if args.decide_shadow_dir or args.decide_apply:
+    if args.decide_apply or miss_logger is not None:
+        from qwen_language import get_language
         from qwen_context_catalog import parse_overview
-        from qwen_decision import decide, sanitize, clarify_text
+        from qwen_decision import decide, clarify_text, warmup
+        # Validate vocabulary before the best-effort dictionary warmup. Invalid
+        # configuration must stop startup, not turn every command into fallback.
+        language = get_language(args.agent_language, os.environ.get('ROUTER_VOCABULARY') or None)
+        began_warmup = time.perf_counter()
+        try:
+            warmup(language)
+            print(json.dumps({'event': 'router_warmup', 'language': language.code, 'elapsed_ms': round((time.perf_counter()-began_warmup)*1000, 3)}), flush=True)
+        except Exception:
+            print('WARNING: router language warmup incomplete', file=sys.stderr, flush=True)
         def decision_fn(body):
             catalog = parse_overview(body['messages'])
             return decide(body['messages'], catalog, body.get('tools'),
-                          tool_choice=body.get('tool_choice'))
-        sanitize_fn = sanitize
-        clarify_fn = clarify_text
-        if args.decide_shadow_dir:
-            decision_shadow = DecisionShadowLogger(args.decide_shadow_dir)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(args.upstream, args.model, args.nctx, key, args.runtime, prompt_counter=counter, response_logger=response_logger, context_auditor=context_auditor, context_audit_fn=context_audit_fn, decision_shadow=decision_shadow, decision_fn=decision_fn, decide_apply=args.decide_apply, clarify_text=clarify_fn, sanitize_fn=sanitize_fn))
+                          tool_choice=body.get('tool_choice'), language=language)
+        clarify_fn = lambda reason: clarify_text(reason, language)
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(args.upstream, args.model, args.nctx, key, prompt_counter=counter, context_auditor=context_auditor, context_audit_fn=context_audit_fn, decision_fn=decision_fn, decide_apply=args.decide_apply, clarify_text=clarify_fn, metrics_logger=metrics_logger, backend_version=args.backend_version, metrics_profile=args.metrics_profile, cache_policy=args.cache_policy, response_style=args.response_style, router_miss_logger=miss_logger, request_capture=request_capture, agent_language=args.agent_language, wait_sound=wait_sound))
     server.daemon_threads = True
+    notify_ready()
     print('Qwen gateway listening on %s:%s; authentication=%s' %
           (args.host, args.port, bool(key)), flush=True)
     try:
@@ -519,13 +736,17 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        if wait_sound is not None:
+            wait_sound.close()
         server.server_close()
-        if response_logger is not None:
-            response_logger.close()
+        if miss_logger is not None:
+            miss_logger.close()
+        if metrics_logger is not None:
+            metrics_logger.close()
         if context_auditor is not None:
             context_auditor.close()
-        if decision_shadow is not None:
-            decision_shadow.close()
+        if request_capture is not None:
+            request_capture.close()
 
 
 if __name__ == '__main__':

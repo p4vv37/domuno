@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 import asyncio
+from datetime import datetime, timezone
 
 
 class StreamCancelled(Exception):
@@ -55,6 +56,47 @@ class PCMStream:
         self.notify()
 
 
+class TextStream:
+    """Bounded sentence queue owned by one render job for the whole utterance."""
+    def __init__(self, slots=32, idle_timeout=30):
+        self.queue = queue.Queue(maxsize=slots)
+        self.stopped = threading.Event()
+        self.finished = threading.Event()
+        self.idle_timeout = idle_timeout
+
+    def send(self, text):
+        if self.stopped.is_set() or self.finished.is_set():
+            raise StreamCancelled()
+        try:
+            self.queue.put_nowait(text)
+        except queue.Full:
+            raise RenderBusy('TTS sentence queue is full') from None
+
+    def finish(self):
+        self.finished.set()
+
+    def cancel(self):
+        self.stopped.set()
+
+    def __iter__(self):
+        deadline = time.monotonic() + self.idle_timeout
+        while True:
+            if self.stopped.is_set():
+                raise StreamCancelled()
+            if self.finished.is_set() and self.queue.empty():
+                return
+            try:
+                text = self.queue.get(timeout=.05)
+            except queue.Empty:
+                if self.finished.is_set():
+                    return
+                if time.monotonic() > deadline:
+                    raise TimeoutError('TTS text stream stalled')
+                continue
+            yield text
+            deadline = time.monotonic() + self.idle_timeout
+
+
 class RequestMetrics:
     """Payload-free service boundaries; monotonic offsets, never playback timing.
 
@@ -63,6 +105,7 @@ class RequestMetrics:
     """
 
     def __init__(self, clock=time.monotonic_ns, emit=None):
+        self.timestamp = datetime.now(timezone.utc).isoformat()
         self.request_id = uuid.uuid4().hex
         self._clock = clock
         self._origin = clock()
@@ -79,7 +122,8 @@ class RequestMetrics:
             self._seen.add(event)
             if event == 'render_start':
                 self._render_start = now
-            record = {'request_id': self.request_id, 'event': event,
+            record = {'schema_version': 1, 'service': 'tts', 'timestamp': self.timestamp,
+                      'request_id': self.request_id, 'event': event,
                       'elapsed_ms': (now - self._origin) / 1_000_000}
             if self._render_start is not None:
                 record['render_elapsed_ms'] = (now - self._render_start) / 1_000_000

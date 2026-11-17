@@ -95,6 +95,12 @@ def _sentence_spans(text):
         yield text[start:]
 
 
+def split_ready_text(text):
+    """Return complete, conservative sentence spans and the unfinished suffix."""
+    spans = list(_sentence_spans(text))
+    return spans[:-1], spans[-1] if spans else ''
+
+
 class RustTTSModel:
     sample_rate = 24000
 

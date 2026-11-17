@@ -24,6 +24,8 @@ services:
       PULSE_COOKIE: /run/user/${LVA_USER_ID:-1000}/pulse/cookie
       AUDIO_INPUT_DEVICE: ${AUDIO_INPUT_DEVICE:-default}
       AUDIO_OUTPUT_DEVICE: ${AUDIO_OUTPUT_DEVICE:-pulse}
+      ENABLE_THINKING_SOUND: ${ENABLE_THINKING_SOUND:-0}
+      PROCESSING_SOUND: ${PROCESSING_SOUND:-}
       LIST_DEVICES: ${LIST_DEVICES:-}
       WAKE_MODEL: okay_nabu
     volumes:

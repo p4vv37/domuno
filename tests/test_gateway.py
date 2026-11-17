@@ -3,14 +3,18 @@ import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import stat
 import sys
 import unittest
+from unittest.mock import patch
 
 GATEWAY = Path(__file__).resolve().parents[1] / 'gateway'
+sys.path.insert(0, str(GATEWAY))
+from qwen_language import get_language
 
 
 def load(name, filename):
@@ -29,6 +33,7 @@ if previous is not None:
     sys.modules['qwen_context_catalog'] = previous
 else:
     del sys.modules['qwen_context_catalog']
+load('qwen_metrics', 'qwen_metrics.py')
 gateway = load('publication_gateway', 'qwen_npu_gateway.py')
 counter = load('publication_counter', 'qwen_dynamic_budget_server.py')
 
@@ -55,6 +60,71 @@ def result(text, rows=None, **kwargs):
 
 
 class PublicationRouterTests(unittest.TestCase):
+    def test_vocabulary_environment_selects_external_file_and_missing_file_blocks_start(self):
+        vocabulary = json.loads((GATEWAY/'router_pl.json').read_text())
+        vocabulary['responses']['clarifications']['negation'] = 'Synthetic response'
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'custom vocabulary.json'
+            path.write_text(json.dumps(vocabulary))
+            env = {**os.environ, 'ROUTER_VOCABULARY': str(path)}
+            selected = subprocess.run([sys.executable, '-c',
+                'from qwen_decision import clarify_text; print(clarify_text("negation"))'],
+                cwd=GATEWAY, env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(selected.returncode, 0, selected.stderr)
+            self.assertEqual(selected.stdout.strip(), 'Synthetic response')
+            path.unlink()
+            blocked = subprocess.run([sys.executable, 'qwen_npu_gateway.py', '--decide-apply', '--port', '0',
+                 '--prompt-counter-url', 'http://127.0.0.1:1/count'],
+                cwd=GATEWAY, env=env, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertNotIn('Qwen gateway listening', blocked.stdout)
+            self.assertIn('FileNotFoundError', blocked.stderr)
+
+    def test_vocabulary_changes_verbs_and_replies_without_changing_target_checks(self):
+        vocabulary = json.loads((GATEWAY/'router_pl.json').read_text())
+        vocabulary['commands']['on'].append('odpal')
+        vocabulary['responses']['success'] = 'Gotowe'
+        vocabulary['responses']['clarifications']['ambiguous-target'] = 'Które urządzenie?'
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'words.json'
+            path.write_text(json.dumps(vocabulary))
+            with patch.object(router, 'default_language', return_value=get_language('pl', str(path))):
+                self.assertEqual(result('Odpal Lampa').kind, router.DecisionKind.TOOLCALL)
+                duplicate = [('Lampa', 'light', 'Salon'), ('Lampa', 'light', 'Gabinet')]
+                self.assertEqual(result('Odpal Lampa', duplicate).kind, router.DecisionKind.CLARIFY)
+                self.assertEqual(result('Odpal Lampa na 50 procent').kind, router.DecisionKind.PASS)
+                self.assertEqual(router._ack_response('{"success":true}'), 'Gotowe')
+                self.assertEqual(router.clarify_text('ambiguous-target'), 'Które urządzenie?')
+
+    def test_vocabulary_rejects_conflicting_commands_and_incomplete_responses(self):
+        original = json.loads((GATEWAY/'router_pl.json').read_text())
+        variants = []
+        duplicate = copy.deepcopy(original)
+        duplicate['commands']['off'].append('WŁĄCZ')
+        variants.append(duplicate)
+        phrase = copy.deepcopy(original)
+        phrase['commands']['on'].append('proszę włącz')
+        variants.append(phrase)
+        negation = copy.deepcopy(original)
+        negation['commands']['on'].append('nie')
+        variants.append(negation)
+        missing = copy.deepcopy(original)
+        del missing['responses']['clarifications']['negation']
+        variants.append(missing)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'words.json'
+            for vocabulary in variants:
+                path.write_text(json.dumps(vocabulary))
+                with self.subTest(vocabulary=vocabulary), self.assertRaises(ValueError):
+                    get_language('pl', str(path))
+
+    def test_inline_heading_text_does_not_shift_the_overview_block(self):
+        content = ('Earlier prose mentions ' + catalog.HEADING + ' without a newline.\n'
+                   + catalog.HEADING + '\n- names: Lampa\n  domain: light\n  areas: Salon')
+        parsed = catalog.parse_overview([{'role': 'system', 'content': content}])
+        self.assertEqual(parsed.status, catalog.Status.RECOGNIZED)
+        self.assertEqual(parsed.entities[0].names, 'Lampa')
+
     def test_dynamic_names_domains_and_optional_area(self):
         for verb, name, domain, action in [
                 ('Włącz', 'Lampa', 'light', 'On'), ('Zgaś', 'Lampa', 'light', 'Off'),
@@ -78,7 +148,7 @@ class PublicationRouterTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(result(text, rows).kind, router.DecisionKind.TOOLCALL)
 
-    @unittest.skipIf(router._simplemma is None, 'simplemma not installed; run this case on Arduino')
+    @unittest.skipIf(not get_language('pl').has_lemma, 'simplemma not installed; run this case on Arduino')
     def test_lemmatization_on_installed_runtime(self):
         self.assertEqual(result('Włącz lampę w salonie').kind, router.DecisionKind.TOOLCALL)
 
@@ -106,15 +176,62 @@ class PublicationRouterTests(unittest.TestCase):
                 ('Włącz lampę', [('Lampa', 'light', 'Salon, Gabinet')]),
                 ('Włącz lampę w', [('Lampa', 'light', 'Salon')])]:
             with self.subTest(text=text, rows=rows):
-                self.assertEqual(result(text, rows).kind, router.DecisionKind.CLARIFY)
+                expected = (router.DecisionKind.PASS if text in ('Włącz XYZ', 'Włącz lampę w Gabinet')
+                            else router.DecisionKind.CLARIFY)
+                self.assertEqual(result(text, rows).kind, expected)
 
     def test_unsupported_grammar_passes_without_losing_parameters(self):
-        for text in ('Otwórz roletę w sypialni na 30%', 'Włącz lampę i wyłącz wiatrak',
+        for text in ('Włącz lampę i wyłącz wiatrak',
                      'Włącz lampę za minutę', 'Jeśli jest ciemno włącz lampę',
                      'Czy możesz włączyć lampę?', 'Jaka jest pogoda?'):
             with self.subTest(text=text):
                 self.assertEqual(result(text).kind, router.DecisionKind.PASS)
         self.assertEqual(result('Nie włącz lampę').reason, 'negation')
+
+    def test_cover_percentages_never_fall_back_to_full_opening(self):
+        for text in ('Otwórz zasłony w salonie w 50%.',
+                     'Otwórz zasłony w salonie w pięćdziesięciu procentach.',
+                     'Otwórz zasłony w 50 procentach.',
+                     'Otwórz zasłony 50%.'):
+            with self.subTest(text=text):
+                decision = result(text, [('zasłony', 'cover', 'Salon')])
+                self.assertEqual(decision.kind, router.DecisionKind.PASS)
+                self.assertIsNone(decision.tool_call)
+
+    def test_numeric_names_and_context_only_area_names_remain_supported(self):
+        for matcher in ('legacy', 'forms'):
+            for area in ('Atrium północne', 'Pokój 50', 'Strefa X-12'):
+                with self.subTest(matcher=matcher, area=area):
+                    rows = [('Markiza 2', 'cover', area)]
+                    decision = result('Otwórz Markiza 2 w '+area, rows, matcher=matcher)
+                    self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
+                    self.assertEqual(decision.tool_call.arguments['area'], area)
+                    self.assertEqual(decision.tool_call.arguments['name'], 'Markiza 2')
+
+    def test_repeated_spaces_in_friendly_name_are_preserved_in_ha_selector(self):
+        for matcher in ('legacy', 'forms'):
+            for name in ('zasłony  Zasłona', 'żaluzje  Sterownik'):
+                rows = [(name, 'cover', 'Atrium północne')]
+                for spoken in (name, name.split('  ')[-1]):
+                    with self.subTest(matcher=matcher, name=name, spoken=spoken):
+                        decision = result('Otwórz '+spoken+' w Atrium północne', rows, matcher=matcher)
+                        self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
+                        self.assertEqual(decision.tool_call.arguments['name'], name)
+
+    def test_repeated_spaces_are_not_area_alias_separators(self):
+        for matcher in ('legacy', 'forms'):
+            decision = result('Otwórz Markiza w Atrium północne',
+                              [('Markiza', 'cover', 'Atrium  północne')], matcher=matcher)
+            self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
+            self.assertEqual(decision.tool_call.arguments['area'], 'Atrium  północne')
+
+    def test_short_name_parts_do_not_hide_collisions(self):
+        for matcher in ('legacy', 'forms'):
+            rows = [('Rolety  Sterownik', 'cover', 'Atrium'),
+                    ('Rolety  Napęd', 'cover', 'Atrium')]
+            decision = result('Otwórz Rolety w Atrium', rows, matcher=matcher)
+            self.assertEqual(decision.kind, router.DecisionKind.CLARIFY)
+            self.assertIsNone(decision.tool_call)
 
     def test_schema_and_tool_choice_respected(self):
         messages = [{'role': 'user', 'content': 'Włącz lampę'}]
@@ -160,9 +277,9 @@ class PublicationRouterTests(unittest.TestCase):
         for content, kind, response in [
                 ('{"success":true}', 'ack', 'Wykonano'),
                 ('{"data":{"success":[{}],"failed":[]}}', 'ack', 'Wykonano'),
-                ('{"error":"failed"}', 'ack', 'Nie udało się.'),
-                ('{"success":false}', 'ack', 'Nie udało się.'),
-                ('{"data":{"failed":[{}]}}', 'ack', 'Nie udało się.'),
+                ('{"error":"failed"}', 'pass', None),
+                ('{"success":false}', 'pass', None),
+                ('{"data":{"failed":[{}]}}', 'pass', None),
                 ('unknown result', 'pass', None), ('{}', 'pass', None)]:
             with self.subTest(content=content):
                 decision = router.decide(self.history(content), current, tools())
@@ -183,11 +300,6 @@ class PublicationRouterTests(unittest.TestCase):
         self.assertEqual(router.decide(history[:-1], current, tools()).kind, router.DecisionKind.PASS)
         history.append(history[-1].copy())
         self.assertEqual(router.decide(history, current, tools()).kind, router.DecisionKind.PASS)
-
-    def test_shadow_log_contains_no_names_or_arguments(self):
-        sanitized = router.sanitize(result('Włącz lampę'))
-        self.assertNotIn('arguments', sanitized)
-        self.assertNotIn('Lampa', json.dumps(sanitized))
 
     def test_gateway_routes_json_and_sse_without_upstream(self):
         decision = result('Włącz lampę')
@@ -226,8 +338,7 @@ class PublicationRouterTests(unittest.TestCase):
 
     def test_log_sinks_keep_distinct_files_and_private_permissions(self):
         with tempfile.TemporaryDirectory() as tmp:
-            for cls,filename in [(gateway.ResponseLogger,'responses.jsonl'),
-                                 (gateway.DecisionShadowLogger,'decision-shadow.jsonl'),
+            for cls,filename in [(gateway.MetricsLogger,'metrics.jsonl'),
                                  (gateway.ContextAuditLogger,'context-audit.jsonl')]:
                 directory=Path(tmp)/filename.removesuffix('.jsonl')
                 logger=cls(directory)
@@ -238,11 +349,11 @@ class PublicationRouterTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode),0o600)
                 self.assertEqual(stat.S_IMODE(directory.stat().st_mode),0o700)
 
-    def test_large_context_without_counter_rejected_before_listening(self):
-        proc = subprocess.run([sys.executable, str(GATEWAY/'qwen_npu_gateway.py'), '--nctx','10240'],
+    def test_gateway_requires_a_prompt_counter_before_listening(self):
+        proc = subprocess.run([sys.executable, str(GATEWAY/'qwen_npu_gateway.py')],
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 2)
-        self.assertIn('budget guard', proc.stderr)
+        self.assertIn('prompt counter is required', proc.stderr)
 
 
 if __name__ == '__main__':

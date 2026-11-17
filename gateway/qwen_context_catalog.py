@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import enum
+import hashlib
+import json
 
 HEADING = 'Static Context: An overview of the areas and the devices in this smart home:'
 
@@ -184,7 +186,7 @@ def parse_overview(messages):
     """
     if not isinstance(messages, list):
         return Catalog(status=Status.NONE, entities=(), provenance=_STATIC_PROVENANCE, detail=None)
-    found = None
+    block = None
     count = 0
     for message in messages:
         if not isinstance(message, dict) or message.get('role') != 'system':
@@ -202,14 +204,15 @@ def parse_overview(messages):
             line_end = end == len(content) or content[end] == '\n'
             if line_start and line_end:
                 count += 1
-                if found is None:
-                    found = content
+                if block is None:
+                    # Keep the exact line-anchored occurrence, not content.find(),
+                    # which could match the same words earlier in prose.
+                    block = content[end:]
             start = end
     if count == 0:
         return Catalog(status=Status.NONE, entities=(), provenance=_STATIC_PROVENANCE, detail=None)
     if count != 1:
         return Catalog(status=Status.UNRECOGNIZED, entities=(), provenance=_STATIC_PROVENANCE, detail='duplicate-heading')
-    block = found[found.find(HEADING) + len(HEADING):]
     reason, rows = _parse_sequence(block)
     if reason:
         return Catalog(status=Status.UNRECOGNIZED, entities=(), provenance=_STATIC_PROVENANCE, detail=reason)
@@ -245,6 +248,46 @@ def summarize(catalog):
 def audit_context(messages):
     """Backward-compatible audit summary: summarize(parse_overview(messages))."""
     return summarize(parse_overview(messages))
+
+
+def audit_request(body):
+    """Fingerprint normalized input without storing prompts, names or schemas.
+
+    These are JSON fingerprints, not hashes of the native rendered token stream.
+    Canonical hashes ignore mapping-key order but preserve nested array order.
+    Only tools_set_hash ignores the outer tools array order.
+    """
+    def encoded(value, canonical=True):
+        return json.dumps(value, ensure_ascii=False, sort_keys=canonical,
+                          separators=(',', ':')).encode('utf-8')
+
+    def digest(value, canonical=True):
+        return hashlib.sha256(encoded(value, canonical)).hexdigest()
+
+    messages = body['messages']
+    tools = body.get('tools')
+    catalog = parse_overview(messages)
+    entities = ([{'names': e.names, 'domain': e.domain, 'areas': e.areas}
+                 for e in catalog.entities] if catalog.status == Status.RECOGNIZED else None)
+    systems = [m for m in messages if isinstance(m, dict) and m.get('role') == 'system']
+    return {
+        'schema_version': 1, 'service': 'context-audit',
+        'request_hash': digest(body, canonical=False),
+        'tools_wire_hash': digest(tools, canonical=False),
+        'tools_order_hash': digest(tools),
+        'tools_set_hash': (digest(sorted(encoded(tool).decode('utf-8') for tool in tools))
+                           if isinstance(tools, list) else digest(tools)),
+        'system_hash': digest(systems),
+        'catalog_hash': digest(entities) if entities is not None else None,
+        'message_count': len(messages),
+        'message_roles': [m['role'] if isinstance(m, dict) and m.get('role') in
+                          ('system', 'developer', 'user', 'assistant', 'tool', 'function')
+                          else 'unknown' for m in messages[:256]],
+        'message_hashes': [digest(m) for m in messages[:256]],
+        'message_fingerprints_complete': len(messages) <= 256,
+        'tool_count': len(tools) if isinstance(tools, list) else 0,
+        **summarize(catalog),
+    }
 
 
 if __name__ == '__main__':

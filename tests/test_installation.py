@@ -55,6 +55,23 @@ class GuardTests(unittest.TestCase):
                 self.assertFalse(state.exists())
 
 
+class VersionTests(unittest.TestCase):
+    def test_version_policy_compatibility_without_model_calls(self):
+        for version, policy, accepted in (('0.11.0', 'reuse', True), ('0.11.0', 'reset', True),
+                                          ('0.9.3', 'reuse', False), ('0.9.3', 'reset', True),
+                                          ('0.10.0', 'reuse', False), ('unknown', 'reuse', False)):
+            with self.subTest(version=version, policy=policy):
+                result = SimpleNamespace(stdout='GenieX CLI Version:     v'+version+'\n')
+                with patch.object(guard_mod.subprocess, 'run', return_value=result) as command:
+                    if accepted:
+                        self.assertEqual(guard_mod.check_version('/test/geniex', policy), version)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            guard_mod.check_version('/test/geniex', policy)
+                    self.assertEqual(command.call_args.args[0], ['/test/geniex', '--skip-update', '--version'])
+                    self.assertEqual(command.call_args.kwargs['timeout'], 20)
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='ha-install-')
@@ -63,6 +80,8 @@ class InstallerTests(unittest.TestCase):
         self.deploy=self.root/'path with spaces'
         self.deploy.mkdir()
         shutil.copy(ROOT/'setup.sh', self.deploy/'setup.sh')
+        (self.deploy/'llm').mkdir()
+        shutil.copy(ROOT/'llm/backend.py', self.deploy/'llm/backend.py')
         fake=self.root/'bin'
         fake.mkdir()
         uv=fake/'uv'
@@ -78,7 +97,8 @@ if sys.argv[1] == 'venv':
         sleep.write_text('#!/bin/sh\nexit 0\n')
         for path in (uv,systemctl,sleep): path.chmod(0o755)
         self.env={k:v for k,v in os.environ.items() if k not in (
-            'GGUF','TOKENIZER','COUNTER_URL','NCTX','DECIDE_APPLY','GATEWAY_PORT','COUNTER_PORT')}
+            'GGUF','TOKENIZER','COUNTER_URL','NCTX','DECIDE_APPLY','GATEWAY_PORT','COUNTER_PORT','CACHE_POLICY','RESPONSE_STYLE','ROUTER_MISS_LOGGING','AGENT_LANGUAGE','STT_PROVIDER','TTS_PROVIDER',
+            'LLM_WAIT_SOUND','LLM_WAIT_SOUND_FILE','LLM_WAIT_SOUND_VOLUME')}
         self.env.update(PATH=str(fake)+':'+os.environ['PATH'],
                         XDG_CONFIG_HOME=str(self.root/'config'),
                         MOCK_UV_CALLS=str(self.root/'uv-calls'),
@@ -88,15 +108,101 @@ if sys.argv[1] == 'venv':
         return subprocess.run(['bash',str(self.deploy/'setup.sh')], env={**self.env,**config},
                               cwd=self.deploy, capture_output=True, text=True)
 
+    @unittest.skipIf(os.geteuid()==0, 'installer intentionally refuses root')
+    def test_lva_volume_dependency_is_installed_inline(self):
+        result = self.install(LLM_WAIT_SOUND='1', LLM_WAIT_SOUND_VOLUME='lva',
+                              COUNTER_URL='http://127.0.0.1:18193/count')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in (self.root / 'uv-calls').read_text().splitlines()]
+        self.assertIn(['pip', 'install', '--python', str(self.deploy / '.venv/bin/python'),
+                       'websockets==15.0.1'], calls)
+
+    @unittest.skipIf(os.geteuid()==0, 'installer intentionally refuses root')
+    def test_english_gateway_does_not_install_polish_dictionaries(self):
+        result = self.install(AGENT_LANGUAGE='en', COUNTER_URL='http://127.0.0.1:18193/count')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.root/'uv-calls').read_text()
+        self.assertIn('simplemma==2.0.0', calls)
+        self.assertNotIn('polish-inflection', calls)
+        unit = (self.root/'config/systemd/user/qwen-ha-gateway.service').read_text()
+        self.assertIn('Environment=AGENT_LANGUAGE=en', unit)
+
+    @unittest.skipIf(os.geteuid()==0, 'installer intentionally refuses root')
+    def test_external_stt_is_not_installed_started_or_restarted(self):
+        binary = self.root/'geniex'
+        binary.write_text('#!/bin/sh\necho "GenieX CLI Version: v0.11.0"\n')
+        binary.chmod(0o755)
+        result = self.install(FULL_STACK='1', GENIEX_BIN=str(binary), AGENT_LANGUAGE='en',
+                              STT_PROVIDER='external', TTS_PROVIDER='external',
+                              COUNTER_URL='http://127.0.0.1:18193/count')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        units = self.root/'config/systemd/user'
+        self.assertTrue((units/'qwen25-3b-backend.service').exists())
+        self.assertFalse((units/'qwen25-whisper-npu.service').exists())
+        self.assertNotIn('whisper', (self.root/'systemctl-calls').read_text())
+
+    @unittest.skipIf(os.geteuid()==0, 'installer intentionally refuses root')
+    def test_invalid_language_or_provider_stops_before_dependency_install(self):
+        for config in ({'AGENT_LANGUAGE': 'xx'}, {'STT_PROVIDER': 'unknown'},
+                       {'TTS_PROVIDER': 'unknown'}, {'FULL_STACK': '1', 'AGENT_LANGUAGE': 'en'}):
+            with self.subTest(config=config):
+                result = self.install(**config)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root/'uv-calls').exists())
+
+    def test_public_prepare_skips_external_speech_assets(self):
+        shutil.copy(ROOT/'run.sh', self.deploy/'run.sh')
+        (self.deploy/'.env').write_text('AGENT_LANGUAGE=en\nSTT_PROVIDER=external\nTTS_PROVIDER=external\n')
+        tokenizer = self.deploy/'assets/qwen-tokenizer'
+        tokenizer.mkdir(parents=True)
+        for name in ('tokenizer.json', 'tokenizer_config.json', 'special_tokens_map.json'):
+            (tokenizer/name).write_text('{}')
+        binary = self.root/'bin/geniex'
+        binary.write_text('#!/bin/sh\nexit 0\n')
+        binary.chmod(0o755)
+        machine = self.root/'bin/uname'
+        machine.write_text('#!/bin/sh\necho aarch64\n')
+        machine.chmod(0o755)
+        result = subprocess.run(['bash', str(self.deploy/'run.sh'), 'prepare'],
+            env={**self.env, 'GENIEX_BIN': str(binary)}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.deploy/'stt').exists())
+        self.assertFalse((self.deploy/'tts-pocket-wyoming').exists())
+
+    def test_public_start_and_stop_leave_external_speech_untouched(self):
+        script = (ROOT/'run.sh').read_text()
+        # Model/device preflight is tested separately. Exercise the real public
+        # lifecycle selection with fake Docker/systemd and no model installation.
+        preflight = '"$ROOT/run.sh" check || fail \'First resolve the items marked MISSING.\''
+        self.assertEqual(script.count(preflight), 1)
+        (self.deploy/'run.sh').write_text(script.replace(preflight, 'true'))
+        (self.deploy/'.env').write_text('AGENT_LANGUAGE=en\nSTT_PROVIDER=external\nTTS_PROVIDER=external\n')
+        (self.deploy/'setup.sh').write_text('#!/bin/sh\nexit 0\n')
+        (self.deploy/'setup.sh').chmod(0o755)
+        docker = self.root/'bin/docker'
+        docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$MOCK_DOCKER_CALLS"\n')
+        docker.chmod(0o755)
+        env = {**self.env, 'MOCK_DOCKER_CALLS': str(self.root/'docker-calls')}
+        for action in ('start', 'stop'):
+            result = subprocess.run(['bash', str(self.deploy/'run.sh'), action],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.root/'docker-calls').read_text().splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all('/lva/docker-compose.yml' in call for call in calls))
+        self.assertNotIn('whisper', (self.root/'systemctl-calls').read_text())
+
     @unittest.skipIf(os.geteuid()==0,'installer intentionally refuses root')
     def test_uv_installs_into_quoted_target_and_rerun_keeps_venv(self):
         for _ in range(2):
-            result=self.install(DECIDE_APPLY='0')
+            result=self.install(DECIDE_APPLY='0', COUNTER_URL='http://127.0.0.1:18193/count')
             self.assertEqual(result.returncode,0,result.stderr)
         calls=[json.loads(line) for line in (self.root/'uv-calls').read_text().splitlines()]
         self.assertEqual(sum(call[0]=='venv' for call in calls),1)
         pip=[call for call in calls if call[:2]==['pip','install']]
-        self.assertEqual(len(pip),2)
+        # Two runs, each installs simplemma and the optional polish-inflection.
+        self.assertEqual(len(pip),4)
+        self.assertTrue(any('polish-inflection==0.7.3' in call for call in pip))
         self.assertIn(str(self.deploy/'.venv/bin/python'),pip[0])
         unit=(self.root/'config/systemd/user/qwen-ha-gateway.service').read_text()
         self.assertNotIn('--decide-apply',unit)
@@ -105,10 +211,10 @@ if sys.argv[1] == 'venv':
         self.assertIn('restart qwen-ha-gateway.service',(self.root/'systemctl-calls').read_text())
 
     @unittest.skipIf(os.geteuid()==0,'installer intentionally refuses root')
-    def test_large_context_requires_counter_before_any_install(self):
-        result=self.install(NCTX='10240')
+    def test_prompt_counter_is_required_before_any_install(self):
+        result=self.install()
         self.assertNotEqual(result.returncode,0)
-        self.assertIn('GGUF + TOKENIZER',result.stderr)
+        self.assertIn('A prompt counter is required',result.stderr)
         self.assertFalse((self.root/'uv-calls').exists())
 
     @unittest.skipIf(os.geteuid()==0,'installer intentionally refuses root')
@@ -126,18 +232,96 @@ if sys.argv[1] == 'venv':
     @unittest.skipIf(os.geteuid()==0,'installer intentionally refuses root')
     def test_full_stack_generates_paths_and_starts_llm_before_stt(self):
         binary=self.root/'geniex'
-        binary.write_text('#!/bin/sh\nexit 0\n');binary.chmod(0o755)
-        result=self.install(FULL_STACK='1',GENIEX_BIN=str(binary))
+        binary.write_text('#!/bin/sh\necho \"GenieX CLI Version:     v0.11.0\"\n');binary.chmod(0o755)
+        result=self.install(FULL_STACK='1',GENIEX_BIN=str(binary),
+                              COUNTER_URL='http://127.0.0.1:18193/count')
         self.assertEqual(result.returncode,0,result.stderr)
         units=self.root/'config/systemd/user'
         backend=(units/'qwen25-3b-backend.service').read_text()
         self.assertIn(str(self.deploy/'llm/backend.py'),backend)
         self.assertIn('--nctx 4096',backend)
+        gateway_unit=(units/'qwen-ha-gateway.service').read_text()
+        self.assertIn('--cache-policy reuse', gateway_unit)
+        self.assertIn('--think=false --metrics', backend)
+        self.assertIn('LimitCORE=0', backend)
+        self.assertIn('--metrics-dir', gateway_unit)
+        self.assertIn(str(self.deploy/'logs/metrics'), gateway_unit)
         self.assertNotIn('%h/ha-local-agent',backend)
         calls=(self.root/'systemctl-calls').read_text()
         self.assertLess(calls.index('start qwen25-3b-backend.service'),
                         calls.index('start qwen25-whisper-npu.service'))
         self.assertNotIn('restart qwen25-3b-backend',calls)
+
+    @unittest.skipIf(os.geteuid()==0, 'installer intentionally refuses root')
+    def test_gateway_only_migration_leaves_backend_and_external_counter_running(self):
+        result = self.install(FULL_STACK='0', NCTX='10240', GGUF='', TOKENIZER='',
+                              COUNTER_URL='http://127.0.0.1:18193/count', CACHE_POLICY='reuse')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.root/'systemctl-calls').read_text()
+        self.assertIn('restart qwen-ha-gateway.service', calls)
+        self.assertNotIn('qwen25-3b-backend', calls)
+        self.assertNotIn('whisper', calls)
+        self.assertNotIn('qwen-ha-counter', calls)
+        self.assertNotIn('transformers', (self.root/'uv-calls').read_text())
+        unit = (self.root/'config/systemd/user/qwen-ha-gateway.service').read_text()
+        self.assertIn('--cache-policy reuse', unit)
+        self.assertIn('--prompt-counter-url "http://127.0.0.1:18193/count"', unit)
+        # systemd path settings reject quotes; only ExecStart supports them.
+        self.assertNotIn('WorkingDirectory="', unit)
+        self.assertNotIn('EnvironmentFile="', unit)
+        self.assertIn('WorkingDirectory=' + str(self.deploy), unit)
+        self.assertIn('--router-miss-log-dir', unit)
+        self.assertNotIn('--router-miss-until', unit)
+        self.assertIn('Environment=ROUTER_MISS_LOGGING=0', unit)
+
+    @unittest.skipIf(os.geteuid()==0, 'installer intentionally refuses root')
+    def test_legacy_requires_explicit_reset_before_installing_dependencies(self):
+        binary = self.root/'geniex'
+        binary.write_text('#!/bin/sh\necho "GenieX CLI Version:     v0.9.3"\n')
+        binary.chmod(0o755)
+        result = self.install(FULL_STACK='1', GENIEX_BIN=str(binary),
+                              COUNTER_URL='http://127.0.0.1:18193/count')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root/'uv-calls').exists())
+        result = self.install(FULL_STACK='1', GENIEX_BIN=str(binary), CACHE_POLICY='reset',
+                              COUNTER_URL='http://127.0.0.1:18193/count')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        units = self.root/'config/systemd/user'
+        self.assertIn('--cache-policy reset', (units/'qwen-ha-gateway.service').read_text())
+        self.assertNotIn('--think=', (units/'qwen25-3b-backend.service').read_text())
+
+    @unittest.skipIf(os.geteuid()==0, 'installer intentionally refuses root')
+    @unittest.skipUnless(shutil.which('systemd-analyze'), 'systemd-analyze unavailable')
+    def test_generated_units_pass_real_systemd_parser_in_paths_with_spaces(self):
+        runtime_dir = os.environ.get('XDG_RUNTIME_DIR')
+        if not runtime_dir or not (Path(runtime_dir) / 'bus').exists():
+            self.skipTest('no user systemd bus')
+        if subprocess.run(['systemctl', '--user', 'show-environment'],
+                          capture_output=True).returncode != 0:
+            self.skipTest('no user systemd session')
+        gguf = self.root/'model.gguf'
+        gguf.touch()
+        tokenizer = self.root/'tokenizer'
+        tokenizer.mkdir()
+        (tokenizer/'tokenizer.json').write_text('{}')
+        result = self.install(NCTX='10240', GGUF=str(gguf), TOKENIZER=str(tokenizer))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        units = self.root/'config/systemd/user'
+        paths = [units/'qwen-ha-gateway.service', units/'qwen-ha-counter.service']
+        command = [shutil.which('systemd-analyze'), '--user', 'verify']
+        parsed = subprocess.run(command + [str(path) for path in paths], capture_output=True, text=True)
+        if 'SO_PASSRIGHTS' in parsed.stderr or 'SO_PASSCRED' in parsed.stderr:
+            self.skipTest('Sandbox blocks systemd parser socket setup')
+        self.assertEqual(parsed.returncode, 0, parsed.stderr)
+        content = paths[0].read_text()
+        self.assertIn('Type=notify', content)
+        self.assertIn('--router-miss-log-dir', content)
+        self.assertNotIn('--router-miss-until', content)
+        paths[0].write_text(content.replace('WorkingDirectory='+str(self.deploy),
+                                          'WorkingDirectory="'+str(self.deploy)+'"'))
+        broken = subprocess.run(command + [str(paths[0])], capture_output=True, text=True)
+        self.assertNotEqual(broken.returncode, 0)
+        self.assertIn('WorkingDirectory= path is not absolute', broken.stderr)
 
     def test_public_start_refuses_missing_requirements_before_install_or_build(self):
         shutil.copy(ROOT/'run.sh',self.deploy/'run.sh')
@@ -150,7 +334,7 @@ if sys.argv[1] == 'venv':
                               capture_output=True,text=True)
         self.assertNotEqual(result.returncode,0)
         self.assertIn('MISSING:',result.stdout)
-        self.assertEqual((self.root/'docker-calls').read_text().strip(),'info')
+        self.assertEqual((self.root/'docker-calls').read_text().splitlines(), ['info', 'compose version'])
         self.assertFalse((self.root/'uv-calls').exists())
         calls=(self.root/'systemctl-calls').read_text()
         self.assertNotIn(' start ',calls)
@@ -173,7 +357,7 @@ class PackagingTests(unittest.TestCase):
     def test_local_python_imports_are_shipped(self):
         # Catches the missing qnn_stt_diagnostics import in the copied STT server.
         for path in ROOT.rglob('*.py'):
-            if any(part in ('.venv','assets','runtime') for part in path.parts): continue
+            if any(part in ('.venv','assets','runtime','tests') for part in path.relative_to(ROOT).parts): continue
             for node in ast.walk(ast.parse(path.read_text())):
                 if not isinstance(node,ast.ImportFrom) or not node.module: continue
                 module=node.module.split('.')[-1]
