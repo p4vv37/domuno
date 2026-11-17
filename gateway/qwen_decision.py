@@ -76,11 +76,8 @@ class ToolCall:
 class Decision:
     kind: DecisionKind
     reason: str | None = None
-    clarification: str | None = None
     response: str | None = None
     tool_call: ToolCall | None = None
-    matched_targets: int | None = None
-    matched_areas: int | None = None
 
 
 def _within_one(a, b):
@@ -360,8 +357,10 @@ def _schema_accepts(value, schema):
             if (kind not in ('integer', 'number') or type(limit) not in (int, float)
                     or not math.isfinite(limit) or not compare(value, limit)):
                 return False
-    if 'enum' in schema and value not in schema['enum']:
-        return False
+    if 'enum' in schema:
+        enum = schema['enum']
+        if not isinstance(enum, list) or value not in enum:
+            return False
     if 'const' in schema and value != schema['const']:
         return False
     if kind == 'array':
@@ -437,7 +436,11 @@ def decide(messages, catalog, tools, default_area=None, tool_choice=None, matche
     # Strip terminal sentence punctuation only, preserving device names inside.
     utterance = utterance.strip().rstrip('.!?')
     command = language.parse(utterance)
-    if command.reason:
+    # `invalid-position` means a complete absolute-position phrase with a value
+    # outside 0-100. Unknown, fractional or relative syntax is `outside-grammar`
+    # and must still reach the LLM.
+    position_out_of_range = command.reason == 'invalid-position'
+    if command.reason and not position_out_of_range:
         kind = DecisionKind.CLARIFY if command.reason == 'negation' else DecisionKind.PASS
         return Decision(kind=kind, reason=command.reason)
     intent = command.intent
@@ -470,7 +473,7 @@ def decide(messages, catalog, tools, default_area=None, tool_choice=None, matche
                     return Decision(kind=DecisionKind.CLARIFY, reason='missing-area')
                 break
     if not targets:
-        if command.intent == 'position':
+        if position_out_of_range or command.intent == 'position':
             # "Set brightness ..." and other parameterized domains are outside
             # the cover-position grammar. Preserve the complete request for LLM.
             return Decision(kind=DecisionKind.PASS, reason='outside-grammar')
@@ -491,10 +494,12 @@ def decide(messages, catalog, tools, default_area=None, tool_choice=None, matche
         if not targets:
             return Decision(kind=DecisionKind.PASS, reason='area-mismatch')
     if len(targets) != 1:
-        return Decision(kind=DecisionKind.CLARIFY, reason='ambiguous-target',
-                        matched_targets=len(targets))
+        return Decision(kind=DecisionKind.CLARIFY, reason='ambiguous-target')
     entity = targets[0][1]
-    if entity.domain not in _DOMAINS[intent]:
+    if position_out_of_range:
+        if entity.domain != 'cover':
+            return Decision(kind=DecisionKind.PASS, reason='outside-grammar')
+    elif entity.domain not in _DOMAINS[intent]:
         return Decision(kind=DecisionKind.PASS, reason='unsupported-domain')
     # A joined area scalar cannot establish one unambiguous HA selector.
     areas = _split_raw(entity.areas) if entity.areas else []
@@ -512,15 +517,18 @@ def decide(messages, catalog, tools, default_area=None, tool_choice=None, matche
                        and normalize(area) in _explicit_aliases(other.areas))]
     if len(collisions) != 1:
         return Decision(kind=DecisionKind.CLARIFY, reason='ambiguous-target')
+    if position_out_of_range:
+        return Decision(kind=DecisionKind.CLARIFY, reason='invalid-position')
     function = _action_tool(intent, tools, tool_choice)
     if function is None:
+        if intent == 'position' and _action_tool('position', tools, None) is None:
+            return Decision(kind=DecisionKind.CLARIFY, reason='position-unavailable')
         return Decision(kind=DecisionKind.PASS, reason='tool-unavailable')
     arguments = _arguments(function, entity, area, command.position)
     if arguments is None:
         return Decision(kind=DecisionKind.PASS, reason='unsupported-schema')
     return Decision(kind=DecisionKind.TOOLCALL,
-                    tool_call=ToolCall(name=function['name'], arguments=arguments),
-                    matched_targets=1, matched_areas=len(areas))
+                    tool_call=ToolCall(name=function['name'], arguments=arguments))
 
 
 def clarify_text(reason, language=None):

@@ -21,10 +21,11 @@ feature, not a failure: a wrong local action is worse than a slower correct one.
 5. **Decide** `TOOLCALL`, `ACK`, `CLARIFY` or `PASS`.
 
 `PASS` is the default for unknown grammar, unsupported domains, unavailable
-tools, unsupported schemas, missing targets and wrong areas. `CLARIFY` is used
-when the request is understood but the target is ambiguous, the area is missing,
-or negation was detected. `ACK` is returned only after a single explicit tool
-success result.
+non-position tools, unsupported schemas, missing targets and wrong areas.
+`CLARIFY` is used when the request is understood but the target is ambiguous,
+the area is missing, negation was detected, an absolute position is outside
+0-100, or the cover has no position tool. `ACK` is returned only after a single
+explicit tool success result.
 
 ## Supported grammar
 
@@ -82,7 +83,6 @@ language separately.
   },
   "responses": {
     "success": "Wykonano.",
-    "failure": "Nie udało się.",
     "default_clarification": "Nie mogę wykonać tego polecenia.",
     "clarifications": {
       "negation": "Nie wykonam zaprzeczonego polecenia.",
@@ -92,7 +92,6 @@ language separately.
       "missing-area": "Podaj nazwę obszaru.",
       "area-mismatch": "To urządzenie nie jest w tym obszarze.",
       "ambiguous-target": "Które urządzenie?",
-      "plural-target": "Które urządzenie?",
       "invalid-position": "Podaj pozycję od 0 do 100 procent.",
       "position-unavailable": "To urządzenie nie obsługuje pozycji."
     }
@@ -107,10 +106,11 @@ Rules enforced at startup:
 - Each list must be non-empty and contain alphabetic words or phrases.
 - Synonyms may not collide after case/diacritic normalization, and may not use
   grammar-control words (`nie`, `w`, `i`, `na`, `the`, `in`, ...).
-- `responses` requires `success`, `failure`, `default_clarification` and
-  `clarifications`.
-- Every clarification reason used by the code must be present. Optional reasons
-  `invalid-position` and `position-unavailable` may be added.
+- `responses` requires `success`, `default_clarification` and `clarifications`.
+  Legacy `failure` is accepted but unused.
+- Every clarification reason used by the code must be present. The legacy
+  `plural-target` key is accepted; `invalid-position` and `position-unavailable`
+  are used for the two local position clarifications described below.
 - Spoken responses must be 1–300 characters.
 
 Invalid or missing vocabulary stops startup before the HTTP socket opens. The
@@ -166,9 +166,21 @@ The value must follow `na` / `w` / `do` in Polish or `to` / `at` in English. A b
 percentage is left to the LLM because it can be part of a literal device name.
 
 This uses **absolute HA position**: 0 is closed, 100 is open, even when the verb is
-`close` / `zamknij`. Relative changes such as “close by 20%” are outside the rule.
-The router never converts a requested percentage into a full open/close, never
-substitutes a different cover, and never falls back to a whole room.
+`close` / `zamknij`. The router never converts a requested percentage into a full
+open/close, never substitutes a different cover, and never falls back to a whole
+room.
+
+Position handling is deliberately split:
+
+- a complete absolute phrase with a value outside 0-100 → local `CLARIFY` with
+  `invalid-position`;
+- a resolved cover whose advertised tools contain no `HassSetPosition` → local
+  `CLARIFY` with `position-unavailable`;
+- unknown wording, fractions, bare percentages and relative changes →
+  `PASS` to the LLM.
+
+The second case is not used for a missing/invalid schema: if the tool exists but
+its schema is unsupported, the request still passes to the LLM.
 
 Only `intent__HassSetPosition` or `HassSetPosition` is used, and only if its
 current schema accepts the canonical name, domain, optional area and numeric

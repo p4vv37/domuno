@@ -8,7 +8,6 @@
   },
   "responses": {
     "success": "Done",
-    "failure": "The action failed.",
     "default_clarification": "I cannot identify the requested action unambiguously.",
     "clarifications": {
       "negation": "OK, I will not perform that action.",
@@ -18,7 +17,6 @@
       "missing-area": "Which room do you mean?",
       "area-mismatch": "I could not find that device in that room.",
       "ambiguous-target": "Several devices match. Please give a more specific name.",
-      "plural-target": "Please specify a single device.",
       "invalid-position": "Specify a whole percentage from zero to one hundred.",
       "position-unavailable": "No compatible tool is available to set this device's position."
     }

@@ -123,7 +123,6 @@ check)
     ;;
 prepare)
     [[ $(uname -m) == aarch64 ]] || fail 'Run preparation on the ARM64 Arduino.'
-    prepare_audio
     [[ -x $GENIEX_BIN ]] || fail 'Install GenieX following the README.'
     "$GENIEX_BIN" --skip-update pull bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_0
     mkdir -p "$TOKENIZER"
@@ -136,6 +135,7 @@ prepare)
     if [[ $TTS_PROVIDER == pocket-pl ]]; then
         python3 tts-pocket-wyoming/prepare_assets.py
     fi
+    prepare_audio
     echo 'Assets downloaded. Set GGUF and QNN_LIB_DIR in .env. ORT/QNN Python packages are installed during the STT image build.'
     ;;
 start)
@@ -155,7 +155,8 @@ start)
     echo 'Started. Home Assistant configuration: README, section 3.'
     ;;
 status)
-    units=(qwen25-3b-backend qwen-ha-counter qwen-ha-gateway)
+    units=(qwen25-3b-backend qwen-ha-gateway)
+    [[ -n ${COUNTER_URL:-} ]] || units+=(qwen-ha-counter)
     [[ $STT_PROVIDER != whisper-qnn ]] || units+=(qwen25-whisper-npu)
     systemctl --user --no-pager status "${units[@]}" || true
     docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'

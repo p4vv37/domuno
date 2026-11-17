@@ -33,7 +33,7 @@ RESET_MESSAGES = [{'role': 'system', 'content': 'Internal cache reset. Reply OK.
                   {'role': 'user', 'content': '.'}]
 
 
-def normalize_request(body, model=MODEL, nctx=4096):
+def normalize_request(body, model=MODEL, nctx=10240):
     if not isinstance(body, dict) or not isinstance(body.get('messages'), list):
         raise ValueError('messages must be an array')
     body = dict(body)
@@ -42,11 +42,14 @@ def normalize_request(body, model=MODEL, nctx=4096):
                 enable_think=False, thinking=False, temperature=0.1, top_k=1, seed=42,
                 repetition_penalty=1.0, presence_penalty=0.0,
                 frequency_penalty=0.0)
-    # Avoid undocumented/speculative/grammar paths on the pinned runtime.
+    # Drop caller knobs for unsupported speculative/grammar/vision/power paths.
+    # `stop` is intentionally ignored: a stop sequence can truncate a tool-call
+    # JSON; output length is controlled by max_completion_tokens below.
     for key in ('spec_type', 'spec_draft_model', 'spec_n_max', 'spec_n_min',
                 'spec_p_min', 'grammar_path', 'grammar_string', 'vit_compute',
-                'power_mode', 'stop', 'reasoning_format'):
+                'power_mode', 'stop'):
         body.pop(key, None)
+    # Pinned GenieX/Qwen reasoning format; callers cannot override it.
     body['reasoning_format'] = 'deepseek'
     limit = body.get('max_completion_tokens', body.get('max_tokens', 384))
     if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
@@ -313,7 +316,7 @@ def build_clarify_sse(text):
     return ''.join('data: %s\n\n' % json.dumps(e, ensure_ascii=False) for e in events) + 'data: [DONE]\n\n'
 
 
-def make_handler(upstream, model=MODEL, nctx=4096, api_key='', prompt_counter=None, context_auditor=None, context_audit_fn=None, decision_fn=None, decide_apply=False, clarify_text=None, metrics_logger=None, backend_version='unknown', metrics_profile='default', cache_policy='reuse', response_style='concise', router_miss_logger=None, request_capture=None, agent_language='pl', wait_sound=None):
+def make_handler(upstream, model=MODEL, nctx=10240, api_key='', prompt_counter=None, context_auditor=None, context_audit_fn=None, decision_fn=None, decide_apply=False, clarify_text=None, metrics_logger=None, backend_version='unknown', metrics_profile='default', cache_policy='reuse', response_style='concise', router_miss_logger=None, request_capture=None, agent_language='pl', wait_sound=None):
     if response_style not in ('concise', 'original'):
         raise ValueError('response_style must be concise or original')
     if cache_policy not in ('reuse', 'reset'):
@@ -359,7 +362,7 @@ def make_handler(upstream, model=MODEL, nctx=4096, api_key='', prompt_counter=No
                            else json.dumps(build_toolcall_response(model, decision.tool_call), ensure_ascii=False).encode())
             else:
                 if decision.kind.value == 'ack':
-                    text = decision.response or 'Wykonano'
+                    text = decision.response or ('Done' if agent_language == 'en' else 'Wykonano')
                 else:
                     text = clarify_text(decision.reason) if clarify_text else 'Nie mogę wykonać tego polecenia.'
                 payload = (build_clarify_sse(text).encode() if stream
@@ -537,7 +540,7 @@ def make_handler(upstream, model=MODEL, nctx=4096, api_key='', prompt_counter=No
             if not acquired:
                 self.error_json(429, 'One inference is already running; retry later')
                 return
-            conn = http.client.HTTPConnection(target.hostname, target.port, timeout=180)
+            conn = None
             started = False
             response_status = None
             complete = False
@@ -547,6 +550,7 @@ def make_handler(upstream, model=MODEL, nctx=4096, api_key='', prompt_counter=No
             observer = None
             self.metrics.record['outcome'] = 'backend_error'
             try:
+                conn = http.client.HTTPConnection(target.hostname, target.port, timeout=180)
                 if cache_policy == 'reset':
                     reset_started = time.perf_counter()
                     reset = normalize_request({'messages': RESET_MESSAGES, 'stream': False,
@@ -626,7 +630,8 @@ def make_handler(upstream, model=MODEL, nctx=4096, api_key='', prompt_counter=No
                     except Exception:
                         if self.metrics.record['outcome'] == 'completed':
                             self.metrics.record['outcome'] = 'unverified'
-                conn.close()
+                if conn is not None:
+                    conn.close()
                 self.close_connection = True
                 gate.release()
         def log_message(self, fmt, *args):
@@ -652,7 +657,7 @@ def main():
     parser.add_argument('--port', type=int, default=18191)
     parser.add_argument('--upstream', default='http://127.0.0.1:18192')
     parser.add_argument('--model', default=MODEL)
-    parser.add_argument('--nctx', type=int, default=4096)
+    parser.add_argument('--nctx', type=int, default=10240)
     parser.add_argument('--agent-language', choices=('pl', 'en'), default=os.environ.get('AGENT_LANGUAGE', 'pl'))
     parser.add_argument('--response-style', choices=('concise', 'original'), default='concise')
     parser.add_argument('--router-miss-log-dir', help='Opt-in private user transcripts for PASS decisions')

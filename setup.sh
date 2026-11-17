@@ -5,7 +5,7 @@ umask 077
 
 DEPLOY_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 MODEL="${MODEL:-bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_0}"
-NCTX="${NCTX:-4096}"
+NCTX="${NCTX:-10240}"
 BACKEND_URL="${BACKEND_URL:-http://127.0.0.1:18192}"
 GATEWAY_HOST="${GATEWAY_HOST:-0.0.0.0}"
 GATEWAY_PORT="${GATEWAY_PORT:-18191}"
@@ -124,7 +124,7 @@ After=network-online.target
 [Service]
 Type=notify
 NotifyAccess=main
-TimeoutStartSec=30
+TimeoutStartSec=60
 WorkingDirectory=$DEPLOY_DIR
 ExecStart=$EXEC
 Restart=on-failure

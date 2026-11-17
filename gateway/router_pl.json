@@ -8,7 +8,6 @@
   },
   "responses": {
     "success": "Wykonano",
-    "failure": "Nie udało się.",
     "default_clarification": "Nie mogę jednoznacznie wykonać tego polecenia.",
     "clarifications": {
       "negation": "OK, nie wykonuję tej akcji.",
@@ -18,7 +17,6 @@
       "missing-area": "W którym pomieszczeniu mam to zrobić?",
       "area-mismatch": "Nie ma takiego urządzenia w tym pomieszczeniu.",
       "ambiguous-target": "Jest kilka pasujących urządzeń. Podaj dokładniejszą nazwę.",
-      "plural-target": "Podaj nazwę lub alias pojedynczego urządzenia.",
       "invalid-position": "Podaj pozycję jako pełny procent od zera do stu.",
       "position-unavailable": "Nie mam zgodnego narzędzia do ustawienia pozycji tego urządzenia."
     }

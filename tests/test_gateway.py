@@ -118,6 +118,23 @@ class PublicationRouterTests(unittest.TestCase):
                 with self.subTest(vocabulary=vocabulary), self.assertRaises(ValueError):
                     get_language('pl', str(path))
 
+    def test_normalization_drops_unsupported_knobs_and_pins_runtime(self):
+        body = {'messages': [{'role': 'user', 'content': 'Test'}],
+                'spec_type': 'draft', 'spec_draft_model': 'draft.gguf',
+                'spec_n_max': 4, 'spec_n_min': 1, 'spec_p_min': .5,
+                'grammar_path': '/tmp/grammar.gbnf', 'grammar_string': 'root ::= "x"',
+                'vit_compute': 'npu', 'power_mode': 'high', 'stop': ['\n\n'],
+                'reasoning_format': 'json', 'temperature': 2, 'max_tokens': 9999}
+        normalized = gateway.normalize_request(body, nctx=10240)
+        for key in ('spec_type', 'spec_draft_model', 'spec_n_max', 'spec_n_min',
+                    'spec_p_min', 'grammar_path', 'grammar_string', 'vit_compute',
+                    'power_mode', 'stop', 'max_tokens'):
+            self.assertNotIn(key, normalized)
+        self.assertEqual(normalized['reasoning_format'], 'deepseek')
+        self.assertEqual(normalized['temperature'], .1)
+        self.assertEqual(normalized['max_completion_tokens'], 512)
+        self.assertEqual(normalized['nctx'], 10240)
+
     def test_inline_heading_text_does_not_shift_the_overview_block(self):
         content = ('Earlier prose mentions ' + catalog.HEADING + ' without a newline.\n'
                    + catalog.HEADING + '\n- names: Lampa\n  domain: light\n  areas: Salon')
@@ -191,12 +208,16 @@ class PublicationRouterTests(unittest.TestCase):
     def test_cover_percentages_never_fall_back_to_full_opening(self):
         for text in ('Otwórz zasłony w salonie w 50%.',
                      'Otwórz zasłony w salonie w pięćdziesięciu procentach.',
-                     'Otwórz zasłony w 50 procentach.',
-                     'Otwórz zasłony 50%.'):
+                     'Otwórz zasłony w 50 procentach.'):
             with self.subTest(text=text):
                 decision = result(text, [('zasłony', 'cover', 'Salon')])
-                self.assertEqual(decision.kind, router.DecisionKind.PASS)
+                self.assertEqual(decision.kind, router.DecisionKind.CLARIFY)
+                self.assertEqual(decision.reason, 'position-unavailable')
                 self.assertIsNone(decision.tool_call)
+        decision = result('Otwórz zasłony 50%.', [('zasłony', 'cover', 'Salon')])
+        self.assertEqual(decision.kind, router.DecisionKind.PASS)
+        self.assertEqual(decision.reason, 'outside-grammar')
+        self.assertIsNone(decision.tool_call)
 
     def test_numeric_names_and_context_only_area_names_remain_supported(self):
         for matcher in ('legacy', 'forms'):

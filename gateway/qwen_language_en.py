@@ -26,7 +26,7 @@ class Strategy(Language):
             return Command(reason='outside-grammar')
         target, position, error = self.split_position(' '.join(text.split()[index+width:]))
         if error:
-            return Command(reason=error)
+            return Command(intent=intent, target=target, reason=error, position=position)
         tail = self.normalize(target).split()
         if (any(word in ('and', 'then', 'if', 'after', 'to', 'by', 'not', "don't", 'never') for word in tail)
                 or any('%' in word or word.startswith('percent') for word in tail)

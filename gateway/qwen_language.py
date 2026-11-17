@@ -49,16 +49,19 @@ def load_vocabulary(path, reserved):
             verbs.add(verb)
         seen.update(verbs)
         normalized[intent] = frozenset(verbs)
-    if not isinstance(responses, dict) or set(responses) != {
-            'success', 'failure', 'default_clarification', 'clarifications'}:
+    required_responses = {'success', 'default_clarification', 'clarifications'}
+    allowed_responses = required_responses | {'failure'}  # legacy optional key
+    if not isinstance(responses, dict) or not required_responses <= set(responses) <= allowed_responses:
         raise ValueError('Vocabulary responses have missing or unknown keys')
     clarifications = responses['clarifications']
     reasons = {'negation', 'catalog-unavailable', 'no-target', 'ambiguous-area',
-               'missing-area', 'area-mismatch', 'ambiguous-target', 'plural-target'}
-    optional = {'invalid-position', 'position-unavailable'}
+               'missing-area', 'area-mismatch', 'ambiguous-target'}
+    optional = {'plural-target', 'invalid-position', 'position-unavailable'}
     if not isinstance(clarifications, dict) or not reasons <= set(clarifications) <= reasons | optional:
         raise ValueError('Vocabulary clarifications have missing or unknown reasons')
-    spoken = [responses[key] for key in ('success', 'failure', 'default_clarification')]
+    spoken = [responses[key] for key in ('success', 'default_clarification')]
+    if 'failure' in responses:
+        spoken.append(responses['failure'])
     if any(not isinstance(text, str) or not text.strip() or len(text) > 300
            for text in spoken + list(clarifications.values())):
         raise ValueError('Spoken responses must contain 1-300 characters')
@@ -127,9 +130,9 @@ class Language:
     def split_position(self, text):
         """Extract one terminal, absolute integer percentage, preserving names.
 
-        Returns (remaining target, position, error). No percentage returns the
-        input unchanged. Relative changes and compound instructions stay outside
-        the closed grammar; malformed percentages never become on/off commands.
+        `invalid-position` is reserved for a syntactically complete absolute
+        position whose value is outside 0-100. Unknown, fractional or relative
+        syntax returns no error here and is classified by the language grammar.
         """
         unit = re.search(r'(?:%|\b(?:' + self.percentage_unit + r'))\s*$', text, re.IGNORECASE)
         if unit is None:
@@ -145,16 +148,16 @@ class Language:
                 value = self._number_words().get(self.lemma(number.replace('-', ' ')))
             if value is None:
                 continue
-            if not 0 <= value <= 100:
-                return text, None, 'invalid-position'
             target = words[:-count]
             if not target or self.normalize(target[-1]) not in self.position_prepositions:
-                return text, None, 'invalid-position'
+                continue
             target.pop()
             if not target:
-                return text, None, 'invalid-position'
+                continue
+            if not 0 <= value <= 100:
+                return ' '.join(target), value, 'invalid-position'
             return ' '.join(target), value, None
-        return text, None, 'invalid-position'
+        return text, None, None
 
     def clarify(self, reason):
         responses = self.vocabulary['responses']

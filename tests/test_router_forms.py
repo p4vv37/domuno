@@ -133,7 +133,7 @@ CORPUS = [
     # A whole percentage after the preposition is a valid position command once
     # HassSetPosition is advertised. This catalog only exposes on/off tools.
     ('position tool not advertised', 'Otwórz roletę w sypialni na 30%',
-     [('Roleta', 'cover', 'Sypialnia')], 'pass:tool-unavailable', 'pass:tool-unavailable'),
+     [('Roleta', 'cover', 'Sypialnia')], 'clarify:position-unavailable', 'clarify:position-unavailable'),
 ]
 
 

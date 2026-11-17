@@ -29,7 +29,7 @@ class Strategy(Language):
             return Command(reason='outside-grammar')
         target, position, error = self.split_position(' '.join(text.split()[index+width:]))
         if error:
-            return Command(reason=error)
+            return Command(intent=intent, target=target, reason=error, position=position)
         tail = self.normalize(target).split()
         if (any(word in self.reserved - {'prosze', 'w', 'we'} for word in tail)
                 or any('%' in word or word.startswith('procent') for word in tail)

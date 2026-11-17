@@ -68,10 +68,10 @@ class PositionTests(unittest.TestCase):
             self.assertEqual(decision.tool_call.arguments['area'], 'Zone 8')
             self.assertEqual(decision.tool_call.arguments['position'], 50)
 
-    def test_missing_position_tool_defers_without_proposing_full_opening(self):
+    def test_missing_position_tool_asks_locally_without_proposing_full_opening(self):
         decision = self.route('Otwórz Markiza 2 na 50%', available=tools())
-        self.assertEqual(decision.kind, router.DecisionKind.PASS)
-        self.assertEqual(decision.reason, 'tool-unavailable')
+        self.assertEqual(decision.kind, router.DecisionKind.CLARIFY)
+        self.assertEqual(decision.reason, 'position-unavailable')
         self.assertIsNone(decision.tool_call)
 
     def test_position_schema_and_forced_tool_are_respected(self):
@@ -139,11 +139,24 @@ class PositionTests(unittest.TestCase):
         self.assertTrue(router._schema_accepts(50, {'allOf': [schema], 'description': 'Position'}))
 
     def test_out_of_range_and_fractional_values_do_not_execute(self):
-        for value in ('-1', '101', '50.5', '50,5'):
+        for value in ('-1', '101'):
+            with self.subTest(value=value):
+                decision = self.route(f'Otwórz Markiza 2 na {value}%')
+                self.assertEqual(decision.kind, router.DecisionKind.CLARIFY)
+                self.assertEqual(decision.reason, 'invalid-position')
+                self.assertIsNone(decision.tool_call)
+        for value in ('50.5', '50,5'):
             with self.subTest(value=value):
                 decision = self.route(f'Otwórz Markiza 2 na {value}%')
                 self.assertEqual(decision.kind, router.DecisionKind.PASS)
-                self.assertEqual(decision.reason, 'invalid-position')
+                self.assertEqual(decision.reason, 'outside-grammar')
+                self.assertIsNone(decision.tool_call)
+        for text, rows in (('Otwórz Markiza 2 na dużo procent', None),
+                           ('Włącz Lampa na 150%', [('Lampa', 'light', None)])):
+            with self.subTest(text=text):
+                decision = self.route(text, rows=rows)
+                self.assertEqual(decision.kind, router.DecisionKind.PASS)
+                self.assertEqual(decision.reason, 'outside-grammar')
                 self.assertIsNone(decision.tool_call)
 
     def test_percentage_like_device_name_does_not_select_a_shorter_neighbor(self):
@@ -195,7 +208,7 @@ class PositionTests(unittest.TestCase):
         language._number_words.cache_clear()
         try:
             with patch.dict(sys.modules, {'num2words': None}):
-                self.assertEqual(language.parse('Open Awning to fifty percent').reason, 'invalid-position')
+                self.assertEqual(language.parse('Open Awning to fifty percent').reason, 'outside-grammar')
                 self.assertEqual(language.parse('Open Awning to 50%').position, 50)
         finally:
             language._number_words.cache_clear()

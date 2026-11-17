@@ -28,7 +28,7 @@ contain the board image, the drivers or the model weights.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `NCTX` | `10240` | Model context size. Allowed range: 2048–10240. `setup.sh` called directly falls back to 4096 unless `NCTX` is exported. |
+| `NCTX` | `10240` | Model context size. Allowed range: 2048–10240. |
 | `AGENT_LANGUAGE` | `pl` | Router language: `pl` or `en`. Does not change the speech models. |
 | `DECIDE_APPLY` | `1` | `1` lets the router answer recognized commands locally; `0` sends everything to Qwen. |
 | `RESPONSE_STYLE` | `concise` | `concise` prepends one stable short-answer instruction; `original` leaves the HA prompt unchanged. |

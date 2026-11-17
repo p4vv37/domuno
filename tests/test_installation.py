@@ -207,7 +207,7 @@ if sys.argv[1] == 'venv':
         unit=(self.root/'config/systemd/user/qwen-ha-gateway.service').read_text()
         self.assertNotIn('--decide-apply',unit)
         self.assertIn('"'+str(self.deploy/'.venv/bin/python')+'"',unit)
-        self.assertIn('--nctx 4096',unit)
+        self.assertIn('--nctx 10240',unit)
         self.assertIn('restart qwen-ha-gateway.service',(self.root/'systemctl-calls').read_text())
 
     @unittest.skipIf(os.geteuid()==0,'installer intentionally refuses root')
@@ -239,7 +239,7 @@ if sys.argv[1] == 'venv':
         units=self.root/'config/systemd/user'
         backend=(units/'qwen25-3b-backend.service').read_text()
         self.assertIn(str(self.deploy/'llm/backend.py'),backend)
-        self.assertIn('--nctx 4096',backend)
+        self.assertIn('--nctx 10240',backend)
         gateway_unit=(units/'qwen-ha-gateway.service').read_text()
         self.assertIn('--cache-policy reuse', gateway_unit)
         self.assertIn('--think=false --metrics', backend)
