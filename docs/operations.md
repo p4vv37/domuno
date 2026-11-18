@@ -26,7 +26,7 @@ llm/backend.py probe          # one short real inference
 
 `Restart=no` on the backend is deliberate. If the cold load fails, the stack does
 not loop and exhaust memory. The guard records
-`~/.local/state/ha-local-agent/attempt-<boot_id>` and refuses a second attempt in
+`~/.local/state/domuno/attempt-<boot_id>` and refuses a second attempt in
 the same boot. It also refuses to start while Whisper or another `geniex` process
 is running, because both models share the NPU.
 

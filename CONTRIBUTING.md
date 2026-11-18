@@ -1,6 +1,6 @@
-# Contributing to Ventuno Voice
+# Contributing to Domuno
 
-First off, thank you for considering contributing to Ventuno Voice. It is people
+First off, thank you for considering contributing to Domuno. It is people
 like you who make a local, open voice stack better.
 
 Following these guidelines helps communicate that you respect the time of the

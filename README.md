@@ -1,7 +1,8 @@
-# Ventuno Voice
+# Domuno
 
 **A local, Polish-first voice assistant for Home Assistant on Arduino VENTUNO Q.**
 
+The name joins *dom* (home) with *Ventuno*, the board the assistant runs on.
 Whisper, Qwen2.5 and Pocket TTS run on one small board. Home Assistant keeps the
 conversation, the device catalog and the actual device control. No cloud inference,
 no cloud API keys, no GPU machine running 24/7.
@@ -141,8 +142,8 @@ does not install the NPU drivers.
 ### 2. Clone and configure
 
 ```bash
-git clone https://github.com/p4vv37/ha-local-agent.git
-cd ha-local-agent
+git clone https://github.com/p4vv37/domuno.git
+cd domuno
 cp .env.example .env
 chmod 600 .env
 ```

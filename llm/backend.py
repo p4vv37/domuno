@@ -29,7 +29,7 @@ def check_version(binary, cache_policy='reuse'):
 def guard(*, boot_id=None, state_dir=None):
     """Refuse a second cold load in one boot or while another NPU client runs."""
     boot = boot_id or Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-    state = state_dir or Path.home() / '.local/state/ha-local-agent'
+    state = state_dir or Path.home() / '.local/state/domuno'
     backend = subprocess.run(['pgrep', '-x', 'geniex'], capture_output=True)
     if backend.returncode != 1:
         raise RuntimeError('Backend already running or process inventory unavailable')

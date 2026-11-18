@@ -42,7 +42,7 @@ class WaitSound:
             self._temporary = tempfile.TemporaryDirectory(prefix='ha-wait-sound-')
             filename = str(Path(self._temporary.name) / 'wait.wav')
             _write_tone(filename)
-        self._argv = [player, '--client-name=ha-local-agent', '--stream-name=LLM waiting',
+        self._argv = [player, '--client-name=domuno', '--stream-name=LLM waiting',
                       filename]
         self._environment = dict(os.environ)
         self._environment.setdefault('PULSE_SERVER', f'unix:/run/user/{os.getuid()}/pulse/native')

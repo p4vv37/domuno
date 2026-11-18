@@ -54,7 +54,7 @@ pgrep -a geniex
 
 - Stop Whisper and any other NPU client before the cold load.
 - `ENOMEM` means reboot. The guard allows **one** load attempt per boot; retrying
-  or deleting `~/.local/state/ha-local-agent/attempt-<boot_id>` is not a fix.
+  or deleting `~/.local/state/domuno/attempt-<boot_id>` is not a fix.
 - If the version check fails, install GenieX 0.11.0 (or 0.9.3 with
   `CACHE_POLICY=reset`).
 

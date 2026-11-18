@@ -246,7 +246,7 @@ if sys.argv[1] == 'venv':
         self.assertIn('LimitCORE=0', backend)
         self.assertIn('--metrics-dir', gateway_unit)
         self.assertIn(str(self.deploy/'logs/metrics'), gateway_unit)
-        self.assertNotIn('%h/ha-local-agent',backend)
+        self.assertNotIn('%h/domuno',backend)
         calls=(self.root/'systemctl-calls').read_text()
         self.assertLess(calls.index('start qwen25-3b-backend.service'),
                         calls.index('start qwen25-whisper-npu.service'))
