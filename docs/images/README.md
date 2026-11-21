@@ -1,5 +1,9 @@
 # Images
 
+- `domuno-logo.svg` — final project mark: a geometric house with a Slavic
+  ornament, a white-and-red infinity sign, and the `DOMUNO HOME ASSISTANT`
+  wordmark. `domuno-logo.png` is the 1254 px raster version for avatars and
+  social previews.
 - `arduino-ventuno-q.jpg` — the test board and its USB conference speaker.
   EXIF/XMP metadata was stripped before adding it to the repository.
 - `architecture.svg` — the system diagram used in the README and the article.

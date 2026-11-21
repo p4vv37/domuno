@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/domuno-logo.svg" alt="Domuno — Home Assistant" width="240">
+</p>
+
 # Domuno
 
 **A local, Polish-first voice assistant for Home Assistant on Arduino VENTUNO Q.**
