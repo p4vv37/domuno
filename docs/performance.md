@@ -42,7 +42,7 @@ QAIRT/QNN variant did not fit the full HA context, while the 4B GGUF variant fai
 to load with a FastRPC memory-mapping error. Those are two different variants and
 two different failures; neither produced a timing sample.
 
-![Model comparison with full HA context: Qwen3-1.7B 18.15 s and 2/3 correct form, Qwen2.5-3B 22.74 s and 3/3](images/npu-model-comparison.svg)
+![Model comparison with full HA context: Qwen3-1.7B 18.15 s and 2/3 correct format, Qwen2.5-3B 22.74 s and 3/3](images/npu-model-comparison.svg)
 
 ## Cold vs warm cache
 

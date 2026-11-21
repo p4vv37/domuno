@@ -4,11 +4,11 @@
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#728198" stroke-width="1.5"/></marker></defs>
 <rect x="0" y="0" width="1200" height="600" rx="0" fill="#f8fafc" stroke="none"/>
 <text x="48" y="61" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="34" font-weight="700" text-anchor="start">Longer speech, similar start time</text>
-<text x="48" y="100" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="21" font-weight="400" text-anchor="start">Pocket TTS · Rust · 3 recorded samples</text>
+<text x="48" y="100" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="21" font-weight="400" text-anchor="start">Pocket TTS · Rust · client-side Wyoming timing</text>
 <circle cx="70" cy="141" r="6" fill="#4164df"/>
-<text x="86" y="148" fill="#4164df" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">First audio</text>
+<text x="86" y="148" fill="#4164df" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">First PCM</text>
 <circle cx="290" cy="141" r="6" fill="#008875"/>
-<text x="306" y="148" fill="#008875" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">Complete audio</text>
+<text x="306" y="148" fill="#008875" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">Complete PCM</text>
 <line x1="135" y1="480" x2="1045" y2="480" stroke="#dce3ec" stroke-width="1"/>
 <text x="106" y="486" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="end">0</text>
 <line x1="135" y1="408.75" x2="1045" y2="408.75" stroke="#dce3ec" stroke-width="1"/>
@@ -19,7 +19,7 @@
 <text x="106" y="272.25" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="end">3</text>
 <line x1="135" y1="195" x2="1045" y2="195" stroke="#dce3ec" stroke-width="1"/>
 <text x="106" y="201" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="end">4</text>
-<text x="48" y="182" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="start">Wait (s)</text>
+<text x="48" y="182" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="start">PCM wait (s)</text>
 <line x1="248.447" y1="480" x2="248.447" y2="487" stroke="#58677b" stroke-width="1"/>
 <text x="248.447" y="517" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="19" font-weight="400" text-anchor="middle">1.5</text>
 <line x1="636.182" y1="480" x2="636.182" y2="487" stroke="#58677b" stroke-width="1"/>

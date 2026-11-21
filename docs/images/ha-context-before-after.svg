@@ -5,7 +5,7 @@
 <rect x="0" y="0" width="1200" height="490" rx="0" fill="#f8fafc" stroke="none"/>
 <text x="48" y="61" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="34" font-weight="700" text-anchor="start">Less context. Faster answers.</text>
 <text x="48" y="100" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="21" font-weight="400" text-anchor="start">Qwen2.5-3B · before and after limiting device exposure</text>
-<text x="48" y="164" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="25" font-weight="700" text-anchor="start">Input tokens</text>
+<text x="48" y="164" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="25" font-weight="700" text-anchor="start">Prompt tokens</text>
 <line x1="138" y1="190" x2="138" y2="349" stroke="#dce3ec" stroke-width="1"/>
 <text x="138" y="380" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="middle">0</text>
 <line x1="313" y1="190" x2="313" y2="349" stroke="#dce3ec" stroke-width="1"/>
@@ -26,6 +26,8 @@
 <text x="874" y="380" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="middle">10</text>
 <line x1="1014" y1="190" x2="1014" y2="349" stroke="#dce3ec" stroke-width="1"/>
 <text x="1014" y="380" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="middle">20</text>
+<line x1="1154" y1="190" x2="1154" y2="349" stroke="#dce3ec" stroke-width="1"/>
+<text x="1154" y="380" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="18" font-weight="400" text-anchor="middle">30</text>
 <text x="644" y="238" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="20" font-weight="400" text-anchor="start">Before</text>
 <rect x="734" y="214" width="318.374" height="36" rx="0" fill="#94a2b7" stroke="none"/>
 <text x="1065.37" y="240" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="22" font-weight="700" text-anchor="start">22.74 s</text>

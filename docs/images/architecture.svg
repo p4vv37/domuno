@@ -4,7 +4,7 @@
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#728198" stroke-width="1.5"/></marker></defs>
 <rect x="0" y="0" width="1200" height="790" rx="0" fill="#f8fafc" stroke="none"/>
 <text x="48" y="61" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="34" font-weight="700" text-anchor="start">One board. Three local models.</text>
-<text x="48" y="100" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="21" font-weight="400" text-anchor="start">Home Assistant coordinates every stage of the conversation.</text>
+<text x="48" y="100" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="21" font-weight="400" text-anchor="start">Pipeline: Mic, STT, LLM/tool call, TTS, speaker. HA orchestrates each call.</text>
 <rect x="421" y="135" width="731" height="608" rx="18" fill="#eff3fa" stroke="#dce3ec"/>
 <text x="451" y="174" fill="#17263c" font-family="Noto Sans, sans-serif" font-size="24" font-weight="700" text-anchor="start">Arduino VENTUNO Q</text>
 <text x="451" y="201" fill="#58677b" font-family="Noto Sans, sans-serif" font-size="19" font-weight="400" text-anchor="start">LVA + local AI services</text>

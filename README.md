@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/domuno-logo.svg" alt="Domuno — Home Assistant" width="240">
+  <img src="docs/images/domuno-logo.svg" alt="Domuno — Home Assistant" width="320">
 </p>
 
 # Domuno
