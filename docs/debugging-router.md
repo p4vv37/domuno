@@ -15,8 +15,8 @@ Install Python 3.10+ (3.12 is a good default) and Git. Then, from a terminal:
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/p4vv37/ha-local-agent.git
-cd ha-local-agent
+git clone https://github.com/p4vv37/domuno.git
+cd domuno
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -32,8 +32,8 @@ python -m pip install polish-inflection==0.7.3 polish-inflection-data==2026.6.28
 ### Windows PowerShell
 
 ```powershell
-git clone https://github.com/p4vv37/ha-local-agent.git
-cd ha-local-agent
+git clone https://github.com/p4vv37/domuno.git
+cd domuno
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -92,7 +92,7 @@ args:     {"name": "Lampa", "domain": ["light"], "area": "Salon"}
    (`ms-python.debugpy`) extensions. The repository recommends both in
    `.vscode/extensions.json`.
 2. Open the **repository root** as the workspace:
-   `File → Open Folder → ha-local-agent`. Do not open the parent
+   `File → Open Folder → domuno`. Do not open the parent
    `qwen-npu` directory; `${workspaceFolder}` must point at the repo.
 3. Run `Python: Select Interpreter` and choose `.venv/bin/python`
    (Linux/macOS) or `.venv\Scripts\python.exe` (Windows).
@@ -124,7 +124,7 @@ not recognise `"type": "debugpy"`, replace it with `"type": "python"`.
 PyCharm Community can debug plain Python; none of the Professional-only Django or
 Flask features are needed.
 
-1. Open the `ha-local-agent` folder.
+1. Open the `domuno` folder.
 2. **Settings → Project → Python Interpreter → Add Local Interpreter**, choose
    the `.venv` interpreter.
 3. **Run → Edit Configurations → + → Python**.
