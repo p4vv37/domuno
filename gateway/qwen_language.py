@@ -84,6 +84,8 @@ class Language:
     supports_forms = False
     percentage_unit = ''
     position_prepositions = ()
+    prefix_blockers = frozenset()
+    max_prefix_words = 4
 
     def __init__(self, vocabulary=None):
         path = vocabulary or Path(__file__).with_name('router_' + self.code + '.json')
@@ -105,6 +107,17 @@ class Language:
 
     def forms(self, alias):
         return ()
+
+    def allows_prefix(self, prefix):
+        """Allow a short leading phrase unless it contains a scope operator.
+
+        This is not a filler dictionary: unknown politeness/adverb words are
+        accepted, while negation, questions, conditions and conjunctions are
+        rejected so the complete utterance can reach the LLM.
+        """
+        if len(prefix) > self.max_prefix_words:
+            return False
+        return not any(word in self.prefix_blockers for word in prefix)
 
     def find_command(self, tokens):
         for index in range(len(tokens)):
@@ -163,8 +176,16 @@ class Language:
         responses = self.vocabulary['responses']
         return responses['clarifications'].get(reason, responses['default_clarification'])
 
+    warmup_word = 'home'
+
     def warmup(self):
-        self.lemma('lights')
+        """Load lazy lemma/inflection/number data before the first request.
+
+        The libraries expose no explicit language loader, so one generic word
+        primes them. This is startup work, not routing data.
+        """
+        self.lemma(self.warmup_word)
+        self.forms(self.warmup_word)
         self._number_words()
 
 

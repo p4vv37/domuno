@@ -1,0 +1,245 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Router: poprawna komenda → TOOLCALL",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "toolcall"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 1
+      }
+    },
+    {
+      "name": "Router: poza gramatyką → PASS",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "outside-grammar"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 2
+      }
+    },
+    {
+      "name": "Router: negacja → CLARIFY",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "negation"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 3
+      }
+    },
+    {
+      "name": "Router: niejednoznaczny target → CLARIFY",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "ambiguous"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 4
+      }
+    },
+    {
+      "name": "Router: pozycja rolety → TOOLCALL",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "position"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 5
+      }
+    },
+    {
+      "name": "Router: pozycja poza zakresem → CLARIFY",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "invalid-position"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 6
+      }
+    },
+    {
+      "name": "Router: brak narzędzia pozycji → CLARIFY",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "position-unavailable"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 7
+      }
+    },
+    {
+      "name": "Router: wynik narzędzia → ACK",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "ack"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 8
+      }
+    },
+    {
+      "name": "Router: komenda EN → TOOLCALL",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "english"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 9
+      }
+    },
+    {
+      "name": "Router: closest match → TOOLCALL",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "closest-match"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 10
+      }
+    },
+    {
+      "name": "Router: prefix → TOOLCALL",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "prefix"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 11
+      }
+    },
+    {
+      "name": "Router: blocked prefix → PASS",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/debug_router.py",
+      "args": [
+        "blocked-prefix"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "stopOnEntry": false,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "presentation": {
+        "group": "Router",
+        "order": 12
+      }
+    }
+  ]
+}

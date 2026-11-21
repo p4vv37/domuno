@@ -6,6 +6,7 @@ import functools
 import json
 import logging
 import math
+import os
 import uuid
 from datetime import datetime, timezone
 import signal
@@ -18,6 +19,12 @@ from wyoming.server import AsyncEventHandler, AsyncServer
 
 LOG = logging.getLogger(__name__)
 MAX_BYTES = 16000 * 2 * 30
+# A static Polish vocabulary prompt. It biases the decoder toward command words
+# and common rooms without seeing the live HA catalog. Override with STT_PROMPT.
+DEFAULT_PROMPT = (
+    'Włącz światło, wyłącz światło, otwórz roletę, zamknij roletę, '
+    'ustaw pozycję rolety, sypialnia, gabinet, salon, kuchnia.'
+)
 ATTRIBUTION = Attribution(
     name='Qualcomm / OpenAI',
     url='https://huggingface.co/qualcomm/Whisper-Large-V3-Turbo-Quantized')
@@ -170,7 +177,8 @@ class Handler(AsyncEventHandler):
 async def serve(args):
     from qnn_whisper_engine import QnnWhisperEngine
     engine = QnnWhisperEngine(model_dir=args.model_dir, tokenizer=args.tokenizer,
-                              backend=args.backend, metadata=args.metadata)
+                              backend=args.backend, metadata=args.metadata,
+                              prompt=args.prompt)
     state = State(engine)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -195,6 +203,8 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--uri',default='tcp://0.0.0.0:10301')
     p.add_argument('--metadata', required=True, help='Public Turbo artifact metadata')
+    p.add_argument('--prompt', default=os.environ.get('STT_PROMPT') or DEFAULT_PROMPT,
+                   help='Static Polish decoder prompt; empty disables it')
     for name in ['model-dir','tokenizer','backend']:
         p.add_argument('--'+name,required=True)
     args = p.parse_args(argv)

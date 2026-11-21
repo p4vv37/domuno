@@ -14,6 +14,7 @@ proposes an action only for one matching device after area filtering.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from functools import lru_cache, partial
 import enum
 import json
@@ -202,7 +203,30 @@ def _fuzzy(index, text, lemma):
                  for entity in value}
         if found:
             return found
-    return None
+    return _closest(index, text)
+
+
+def _closest(index, text):
+    """Unique high-similarity recovery for larger ASR errors.
+
+    Only used after exact/form/lemma/one-edit matching fails. A single best
+    candidate must clear 0.75 similarity and beat the runner-up by 0.05; ties or
+    weak matches stay unresolved so the caller can ask or pass to the LLM.
+    """
+    if len(text) < 5:
+        return None
+    best = second = 0.0
+    found = set()
+    for table in (index.names, index.lemmas):
+        for key, value in table.items():
+            score = SequenceMatcher(None, text, key).ratio()
+            if score > best + 1e-9:
+                second, best, found = best, score, set(value)
+            elif abs(score - best) <= 1e-9:
+                found.update(value)
+            elif score > second:
+                second = score
+    return found if best >= .75 and best - second >= .05 else None
 
 
 def _index_match(index, text, lemma):
@@ -289,20 +313,49 @@ def _ack_response(content, language=None):
     return None
 
 
+def _closest_alias(text, aliases):
+    """A unique similarity match, or None; never used for short phrases."""
+    if len(text) < 5:
+        return None
+    scores = sorted((SequenceMatcher(None, text, alias).ratio()
+                     for alias in aliases), reverse=True)
+    if not scores or scores[0] < .75:
+        return None
+    second = scores[1] if len(scores) > 1 else 0.0
+    return scores[0] if scores[0] - second >= .05 else None
+
+
 def _match_entities(norm_target, entities, language):
     """Legacy lexical matcher: indices of entities whose aliases match."""
     exact = [i for i, e in enumerate(entities) if norm_target in _aliases(e.names, language, name_parts=True)]
     if exact:
         return exact
-    return [i for i, e in enumerate(entities)
-            if any(_within_one(norm_target, a) for a in _aliases(e.names, language, name_parts=True))]
+    nearby = [i for i, e in enumerate(entities)
+              if any(_within_one(norm_target, a) for a in _aliases(e.names, language, name_parts=True))]
+    if nearby:
+        return nearby
+    scored = []
+    for i, entity in enumerate(entities):
+        aliases = _aliases(entity.names, language, name_parts=True)
+        best = _closest_alias(norm_target, aliases)
+        if best is not None:
+            scored.append((best, i))
+    if not scored:
+        return []
+    scored.sort(reverse=True)
+    best = scored[0][0]
+    if len(scored) > 1 and best - scored[1][0] < .05:
+        return []
+    return [i for score, i in scored if score == best]
 
 
 def _match_area(norm_area, entity, language):
     if entity.areas is None:
         return False
     aliases = _aliases(entity.areas, language)
-    return norm_area in aliases or any(_within_one(norm_area, a) for a in aliases)
+    return (norm_area in aliases
+            or any(_within_one(norm_area, a) for a in aliases)
+            or _closest_alias(norm_area, aliases) is not None)
 
 
 def _action_tool(intent, tools, tool_choice):

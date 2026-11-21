@@ -343,8 +343,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 Use `.venv/bin/python` to exercise the installed `simplemma`. Number
 normalization tests require `num2words==0.5.14`; the TTS image includes it.
 Protocol tests use fake models. The NPU/ARM64 paths still need the target board.
-See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR; hardware-specific
-results need to state what was actually tested.
+To step through `decide()` on a PC, use the synthetic harness and the VS Code /
+PyCharm setup in [docs/debugging-router.md](docs/debugging-router.md). See
+[CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR; hardware-specific results
+need to state what was actually tested.
 
 Code layout:
 
@@ -356,8 +358,9 @@ stt/                    QNN Whisper engine, profile validation, Wyoming server
 gateway/                OpenAI proxy, prompt budget, router, metrics
 tts-pocket-wyoming/     Rust TTS adapter, text streaming, PCM delivery
 lva/                    Linux Voice Assistant compose configuration
+tools/                  offline router debug harness
 tests/                  offline unit and integration-style tests
-docs/                   configuration, operations, router, speech, performance
+docs/                   configuration, operations, router, debugging, performance
 ```
 
 Start reading at `gateway/qwen_npu_gateway.py`, then
@@ -371,6 +374,7 @@ the Wyoming handlers, then `stt/qnn_whisper_engine.py` or
 - [Configuration](docs/configuration.md) — every `.env` variable and how to apply it
 - [Operations](docs/operations.md) — startup, KV cache, updates, metrics, private logs
 - [Router](docs/router.md) — grammar, vocabulary, fallback and cover positions
+- [Debugging the router](docs/debugging-router.md) — synthetic harness, VS Code and PyCharm
 - [Home Assistant](docs/home-assistant.md) — integrations, HACS, Assist pipeline and screenshots
 - [Performance](docs/performance.md) — measured numbers and caveats
 - [Troubleshooting](docs/troubleshooting.md) — common failures and safe diagnostics

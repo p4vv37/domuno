@@ -205,6 +205,35 @@ class PublicationRouterTests(unittest.TestCase):
                 self.assertEqual(result(text).kind, router.DecisionKind.PASS)
         self.assertEqual(result('Nie włącz lampę').reason, 'negation')
 
+    def test_closest_match_recovers_larger_stt_noise_only_when_unique(self):
+        rows = [('roleta  Rolety', 'cover', 'Sypialnia')]
+        for text in ('Otwórz rożoleta w sypialni.',
+                     'Otwórz roleta w sypialnym.',
+                     'Otwórz rożoleta w sypialnym.'):
+            with self.subTest(text=text):
+                decision = result(text, rows)
+                self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
+                self.assertEqual(decision.tool_call.arguments['name'], 'roleta  Rolety')
+                self.assertEqual(decision.tool_call.arguments['area'], 'Sypialnia')
+        decision = result('Otwórz lampka w sypialni.', rows)
+        self.assertEqual(decision.kind, router.DecisionKind.PASS)
+        self.assertIsNone(decision.tool_call)
+
+    def test_politeness_and_urgency_prefixes_keep_local_routing(self):
+        rows = [('Markiza', 'cover', None)]
+        for prefix in ('', 'Proszę ', 'Proszę bardzo ', 'Teraz ', 'Natychmiast ',
+                       'W tej chwili ', 'Już ', 'Szybko ', 'Od razu ', 'No ',
+                       'Proszę natychmiast ', 'Szybciutko ', 'Chciałbym teraz '):
+            with self.subTest(prefix=prefix):
+                decision = result(prefix+'Otwórz Markiza', rows)
+                self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
+                self.assertEqual(decision.tool_call.arguments['name'], 'Markiza')
+        for text in ('Może otwórz Markiza', 'Czy otwórz Markiza', 'Markiza otwórz'):
+            with self.subTest(text=text):
+                decision = result(text, rows)
+                self.assertEqual(decision.kind, router.DecisionKind.PASS)
+                self.assertIsNone(decision.tool_call)
+
     def test_cover_percentages_never_fall_back_to_full_opening(self):
         for text in ('Otwórz zasłony w salonie w 50%.',
                      'Otwórz zasłony w salonie w pięćdziesięciu procentach.',

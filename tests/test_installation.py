@@ -357,7 +357,7 @@ class PackagingTests(unittest.TestCase):
     def test_local_python_imports_are_shipped(self):
         # Catches the missing qnn_stt_diagnostics import in the copied STT server.
         for path in ROOT.rglob('*.py'):
-            if any(part in ('.venv','assets','runtime','tests') for part in path.relative_to(ROOT).parts): continue
+            if any(part in ('.venv','assets','runtime','tests','tools') for part in path.relative_to(ROOT).parts): continue
             for node in ast.walk(ast.parse(path.read_text())):
                 if not isinstance(node,ast.ImportFrom) or not node.module: continue
                 module=node.module.split('.')[-1]

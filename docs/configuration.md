@@ -73,7 +73,13 @@ they do not consume the prompt budget. The grammar, vocabulary format and fallba
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `STT_PROVIDER` | `whisper-qnn` | `whisper-qnn` runs the local Whisper Large-v3-Turbo adapter; `external` means HA manages STT elsewhere. |
+| `STT_PROMPT` | empty | Static Polish decoder prompt for local Whisper. Empty uses the built-in command/room vocabulary. |
 | `TTS_PROVIDER` | `pocket-pl` | `pocket-pl` runs the local Polish Pocket TTS server; `external` means HA manages TTS elsewhere. |
+
+The local Whisper decoder is primed with a short static Polish prompt (command
+verbs and common rooms). It is not built from the live HA catalog. The prompt
+adds a few fixed decoder steps; set `STT_PROMPT` to a sentence list to override
+it, or to a single space if you want to disable it.
 
 Each selection is independent, so a Polish pipeline can combine one local and one
 external stage. `external` means “managed outside these scripts”, not necessarily

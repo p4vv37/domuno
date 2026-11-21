@@ -103,6 +103,33 @@ curl --fail --max-time 60 http://<Arduino-IP>:18191/v1/chat/completions \
 If `QWEN_GATEWAY_API_KEY` is set, send `Authorization: Bearer <key>` from both HA
 and `curl`. If HA is on another machine, do not bind `GATEWAY_HOST=127.0.0.1`.
 
+## Microphone quality
+
+If STT misses consonants or invents words while the recording level is healthy,
+check the card profile before changing the model:
+
+```bash
+pactl list cards
+pactl list sources short
+parecord --rate=16000 --channels=1 --format=s16le --file-format=wav /tmp/mic.wav
+```
+
+Some USB conference speakers expose a processed `mono-fallback` profile and a
+raw `pro-audio` profile. On the tested EMEET OfficeCore M1A, `pro-audio` preserved
+noticeably more 1–6 kHz energy and fixed repeated `otwórz roletę` errors. Select
+it, set the default source/sink, and restart LVA:
+
+```bash
+pactl set-card-profile alsa_card.usb-EMEET_EMEET_OfficeCore_M1A_130299662-00 pro-audio
+pactl set-default-source alsa_input.usb-EMEET_EMEET_OfficeCore_M1A_130299662-00.pro-input-0
+pactl set-default-sink alsa_output.usb-EMEET_EMEET_OfficeCore_M1A_130299662-00.pro-output-0
+docker restart linux-voice-assistant
+```
+
+WirePlumber normally restores the selected profile and default nodes after a
+reboot. Re-check `pactl get-default-source` after the first reboot. A different
+microphone or a closer position may still beat any profile change.
+
 ## Gateway HTTP errors
 
 | Status | Cause | Fix |

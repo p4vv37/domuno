@@ -40,6 +40,13 @@ router supplies target resolution, uniqueness checks and schema validation.
 Device and area names in the examples are placeholders. The actual selectors
 always come from the current HA context, never from a built-in list.
 
+Up to four words may precede the command verb: unknown politeness and adverb
+words are accepted, so `Natychmiast otwórz Markiza` and
+`W tej chwili otwórz Markiza` stay local. The prefix is rejected when it contains
+a scope-changing word — negation, a question, a condition, a conjunction or
+`może` — so the complete utterance can reach the model. The same rule applies to
+English. This is a small grammar guard, not a filler dictionary.
+
 Polish and English command words come from `gateway/router_pl.json` and
 `gateway/router_en.json`. The JSON contains only command synonyms and spoken
 replies. Tool mappings, supported domains, grammar and selector checks stay in
@@ -130,8 +137,10 @@ commands, brightness, timers or multi-action support.
 ## Target and area resolution
 
 The catalog comes from the stock HA “Static Context” entity overview. Explicit
-spellings win over generated forms, generated forms over lemmas, and every exact
-hit wins over one-edit recovery.
+spellings win over generated forms, generated forms over lemmas, then one-edit
+recovery. If that still misses, a unique similarity fallback accepts a close
+match only when it scores at least 0.75 and beats the runner-up by 0.05; a tie,
+weak match or ambiguity stays unresolved and goes to clarification or the LLM.
 
 - **Aliases:** comma-separated entries are literal aliases. Repeated spaces may
   be part of a friendly name and are preserved in the selector sent to HA.

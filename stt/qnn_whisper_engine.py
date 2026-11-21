@@ -28,6 +28,14 @@ _REGISTRY_LOCK = threading.RLock()
 _OWNER = None
 
 
+def forced_decoder_token(prefix, prompt_ids, step):
+    """Prefix tokens for the four Whisper control steps, then initial prompt."""
+    if step < 3:
+        return prefix[step + 1]
+    offset = step - 3
+    return prompt_ids[offset] if offset < len(prompt_ids) else None
+
+
 class QnnWhisperEngine:
     """Constructor opens NPU sessions; call close(), or use a context manager.
 
@@ -35,7 +43,7 @@ class QnnWhisperEngine:
     Clips shorter than 100 ms, effectively silent, or longer than 30 s fail.
     This engine does not resample, trim, silently truncate or change host env.
     """
-    def __init__(self, model_dir, tokenizer, backend, max_tokens=128, *, metadata):
+    def __init__(self, model_dir, tokenizer, backend, max_tokens=192, *, metadata, prompt=''):
         global _OWNER
         self._lock = threading.RLock()
         self.encoder = self.decoder = self.tokenizer = None
@@ -66,6 +74,11 @@ class QnnWhisperEngine:
             special = ['<|startoftranscript|>', '<|pl|>', '<|transcribe|>', '<|notimestamps|>', '<|endoftext|>']
             self.ids = [self.tokenizer.token_to_id(s) for s in special]
             self.profile.validate_tokenizer(self.tokenizer, self.ids)
+            prompt = (prompt or '').strip()
+            self.prompt_ids = (self.tokenizer.encode(prompt, add_special_tokens=False).ids
+                               if prompt else [])
+            if len(self.prompt_ids) > self.max_tokens - 8:
+                raise ValueError('STT prompt is too long for the decoder budget')
             self.extractor = importlib.import_module('faster_whisper.feature_extractor').FeatureExtractor(feature_size=self.profile.mel_bins)
             self._ort = importlib.import_module('onnxruntime')
             qnn = importlib.import_module('onnxruntime_qnn')
@@ -133,16 +146,18 @@ class QnnWhisperEngine:
                 if not np.isfinite(out['logits']).all():
                     raise RuntimeError('Nonfinite decoder logits')
                 cache = {name:out[name.removesuffix('_in')+'_out'] for name in cache}
-                token = prefix[step+1] if step < 3 else int(np.argmax(out['logits'][0,:,0,0]))
+                forced = forced_decoder_token(prefix, self.prompt_ids, step)
+                token = forced if forced is not None else int(np.argmax(out['logits'][0,:,0,0]))
                 tokens.append(token)
                 if token == eot:
                     break
             if tokens[-1] != eot:
                 raise RuntimeError('Decoder reached token limit without EOT; transcript rejected')
-            text = self.tokenizer.decode(tokens,skip_special_tokens=True).strip()
+            generated = tokens[4 + len(self.prompt_ids):]
+            text = self.tokenizer.decode(generated,skip_special_tokens=True).strip()
             if not text:
                 raise RuntimeError('Empty transcript')
-            return {'text':text,'tokens':tokens,'eot_reached':True,'truncated':False,'status':'EOT','audio_s':seconds,'timings_seconds':{'preprocess':prepared-start,'encoder':encoded-prepared,'decoder_steps':times,'decoder_total':sum(times),'total':perf_counter()-start,'session_init':self.init_seconds}}
+            return {'text':text,'tokens':tokens,'prompt_tokens':len(self.prompt_ids),'eot_reached':True,'truncated':False,'status':'EOT','audio_s':seconds,'timings_seconds':{'preprocess':prepared-start,'encoder':encoded-prepared,'decoder_steps':times,'decoder_total':sum(times),'total':perf_counter()-start,'session_init':self.init_seconds}}
 
     def close(self):
         global _OWNER

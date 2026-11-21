@@ -8,6 +8,10 @@ class Strategy(Language):
     reserved = frozenset(('not', 'do', 'please', 'in', 'at', 'and', 'then', 'if', 'after', 'to', 'by'))
     percentage_unit = r'percent|per cent'
     position_prepositions = ('to', 'at')
+    prefix_blockers = frozenset((
+        'not', "don't", 'never', 'if', 'when', 'whether', 'and', 'or', 'but',
+        'then', 'after', 'before', 'could', 'can', 'would', 'will', 'do',
+        'does', 'did', 'why', 'how', 'what', 'where', 'who'))
 
     def lemma(self, text):
         words = text.split()
@@ -22,7 +26,7 @@ class Strategy(Language):
             return Command(reason='no-command')
         if any(word in ('not', "don't", 'never') for word in tokens[:index]):
             return Command(reason='negation')
-        if tokens[:index] not in ([], ['please']):
+        if not self.allows_prefix(tokens[:index]):
             return Command(reason='outside-grammar')
         target, position, error = self.split_position(' '.join(text.split()[index+width:]))
         if error:

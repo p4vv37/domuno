@@ -7,6 +7,9 @@ services:
     restart: "no"
     ports:
       - "10301:10301"
+    environment:
+      # Empty uses the built-in Polish command prompt in qnn_wyoming_server.py.
+      STT_PROMPT: ${STT_PROMPT:-}
     devices:
       - /dev/fastrpc-cdsp:/dev/fastrpc-cdsp
       - /dev/fastrpc-cdsp-secure:/dev/fastrpc-cdsp-secure

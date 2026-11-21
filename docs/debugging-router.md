@@ -1,0 +1,173 @@
+# Debugging the router
+
+This walks through `qwen_decision.decide()` on a normal PC. It needs no board,
+Docker, model, NPU or network access. The harness uses synthetic HA entities and
+tool schemas.
+
+The debug entry point is [tools/debug_router.py](../tools/debug_router.py). It
+inserts `gateway/` into `sys.path`, builds a catalog with
+`qwen_context_catalog.parse_overview()`, and calls `decide()`.
+
+## 1. Prepare the PC
+
+Install Python 3.10+ (3.12 is a good default) and Git. Then, from a terminal:
+
+### Linux / macOS
+
+```bash
+git clone https://github.com/p4vv37/ha-local-agent.git
+cd ha-local-agent
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install simplemma==2.0.0 num2words==0.5.14
+```
+
+For inflected Polish names, optionally install:
+
+```bash
+python -m pip install polish-inflection==0.7.3 polish-inflection-data==2026.6.28
+```
+
+### Windows PowerShell
+
+```powershell
+git clone https://github.com/p4vv37/ha-local-agent.git
+cd ha-local-agent
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install simplemma==2.0.0 num2words==0.5.14
+```
+
+If PowerShell blocks activation, either run
+`Set-ExecutionPolicy -Scope Process Bypass` in that terminal or use
+`.\.venv\Scripts\python.exe` directly.
+
+The optional packages are not required for the bundled scenarios: they use exact
+names such as `Lampa`, `Markiza` and `Atrium` on purpose. Install them if you want
+to experiment with inflected names such as `lampę` / `rolety`.
+
+## 2. Run the harness without a debugger
+
+```bash
+python tools/debug_router.py --list
+python tools/debug_router.py toolcall
+```
+
+Example output:
+
+```text
+scenario: toolcall
+what:     existing light in an exact area -> TOOLCALL
+kind:     toolcall
+reason:   None
+tool:     intent__HassTurnOn
+args:     {"name": "Lampa", "domain": ["light"], "area": "Salon"}
+```
+
+### Scenarios
+
+| Scenario | What it exercises | Expected result |
+| --- | --- | --- |
+| `toolcall` | existing light in an exact area | `TOOLCALL` |
+| `outside-grammar` | two actions in one sentence | `PASS outside-grammar` |
+| `negation` | explicit negation | `CLARIFY negation` |
+| `ambiguous` | same name in two areas | `CLARIFY ambiguous-target` |
+| `no-target` | unknown device | `PASS no-target` |
+| `closest-match` | larger STT name/area typo | `TOOLCALL` |
+| `prefix` | unknown leading phrase before the verb | `TOOLCALL` |
+| `blocked-prefix` | condition/question prefix | `PASS outside-grammar` |
+| `position` | absolute cover position | `TOOLCALL HassSetPosition` |
+| `position-unavailable` | cover without position tool | `CLARIFY position-unavailable` |
+| `invalid-position` | absolute value outside 0-100 | `CLARIFY invalid-position` |
+| `relative-position` | relative cover change | `PASS` to the LLM |
+| `ack` | single explicit tool success | `ACK` |
+| `english` | English strategy | `TOOLCALL` |
+| `catalog-unavailable` | no HA overview | `PASS catalog-unavailable` |
+
+## 3. VS Code
+
+1. Install the **Python** (`ms-python.python`) and **Python Debugger**
+   (`ms-python.debugpy`) extensions. The repository recommends both in
+   `.vscode/extensions.json`.
+2. Open the **repository root** as the workspace:
+   `File → Open Folder → ha-local-agent`. Do not open the parent
+   `qwen-npu` directory; `${workspaceFolder}` must point at the repo.
+3. Run `Python: Select Interpreter` and choose `.venv/bin/python`
+   (Linux/macOS) or `.venv\Scripts\python.exe` (Windows).
+4. Open `gateway/qwen_decision.py` and set a breakpoint:
+   - at the start of `decide()`, or
+   - on `command = language.parse(utterance)`,
+   - on `targets = resolve(...)`,
+   - on `function = _action_tool(...)`.
+5. Open **Run and Debug** and choose one of:
+   - `Router: poprawna komenda → TOOLCALL`
+   - `Router: poza gramatyką → PASS`
+   - `Router: negacja → CLARIFY`
+   - `Router: niejednoznaczny target → CLARIFY`
+   - `Router: pozycja rolety → TOOLCALL`
+   - `Router: pozycja poza zakresem → CLARIFY`
+   - `Router: brak narzędzia pozycji → CLARIFY`
+   - `Router: wynik narzędzia → ACK`
+   - `Router: komenda EN → TOOLCALL`
+6. Press **F5**. Use **F10** (step over), **F11** (step into), **Shift+F11**
+   (step out). Inspect `command`, `targets`, `entity`, `function` and
+   `arguments` in the Variables panel.
+
+The committed [.vscode/launch.json](../.vscode/launch.json) already contains
+these configurations. If your VS Code uses the older Python extension and does
+not recognise `"type": "debugpy"`, replace it with `"type": "python"`.
+
+## 4. PyCharm Community
+
+PyCharm Community can debug plain Python; none of the Professional-only Django or
+Flask features are needed.
+
+1. Open the `ha-local-agent` folder.
+2. **Settings → Project → Python Interpreter → Add Local Interpreter**, choose
+   the `.venv` interpreter.
+3. **Run → Edit Configurations → + → Python**.
+4. Set:
+   - Script path: `tools/debug_router.py`
+   - Parameters: `toolcall` (or another scenario)
+   - Working directory: the repository root
+   - Interpreter: the `.venv` interpreter
+5. Set a breakpoint in `gateway/qwen_decision.py` and choose **Debug**.
+
+## 5. What to watch while stepping
+
+In `decide()`:
+
+- `command` — the parsed `intent`, `target`, `reason`, `position`;
+- `position_out_of_range` — only true for a complete absolute phrase outside
+  0-100;
+- `targets` — candidate `(index, entity)` pairs after name and area resolution;
+- `entity` — the single selected entity, its domain and areas;
+- `function` — the advertised HA tool selected for the intent;
+- `arguments` — the final selectors sent to HA.
+
+Useful breakpoints:
+
+| Where | Why |
+| --- | --- |
+| `command = language.parse(...)` | see exactly what the language strategy understood |
+| `targets = resolve(...)` | see name matching before area filtering |
+| `if area_text:` | see area filtering |
+| `if len(targets) != 1:` | see ambiguity detection |
+| `function = _action_tool(...)` | see tool choice |
+| `arguments = _arguments(...)` | see schema validation |
+
+## 6. Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| `ModuleNotFoundError: qwen_decision` | Run from the repository root; the harness adds `gateway/` to `sys.path`. |
+| VS Code uses the wrong Python | `Python: Select Interpreter` → `.venv`. |
+| `debugpy` is not a valid type | Install Python Debugger, or change `type` to `python`. |
+| `polish-inflection` install fails | It is optional; the bundled scenarios use exact names and still run. |
+| No breakpoint hit | Make sure you opened the repo root and launched a `Router: ...` configuration, not just “Run Python File”. |
+| Output differs from the table | Run `python tools/debug_router.py --list` and check optional packages; exact-name scenarios should not depend on them. |
+
+This is an offline harness. It does not validate HA connectivity, audio, NPU,
+Docker or the gateway HTTP layer.

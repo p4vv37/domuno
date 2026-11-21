@@ -15,8 +15,15 @@ class Strategy(Language):
     area_prepositions = ('w', 'we')
     reserved = frozenset(('nie', 'prosze', 'w', 'we', 'i', 'oraz', 'potem', 'jesli', 'za', 'na', 'do'))
     supports_forms = odmien_warianty is not None
+    warmup_word = 'dom'
     percentage_unit = r'procent(?:ach|ów|y|a)?'
     position_prepositions = ('na', 'w', 'do')
+    # Scope-changing words are not treated as harmless leading material.
+    # Unknown adverbs/politeness words are accepted up to max_prefix_words.
+    prefix_blockers = frozenset((
+        'nie', 'czy', 'jesli', 'gdy', 'kiedy', 'zanim', 'przed', 'po', 'i',
+        'oraz', 'lub', 'albo', 'ani', 'ale', 'bo', 'ze', 'zeby', 'moze',
+        'ktory', 'ktora', 'ktore', 'gdzie', 'jak', 'co', 'dlaczego'))
 
     def parse(self, text):
         tokens = self.normalize(text).split()
@@ -25,7 +32,7 @@ class Strategy(Language):
             return Command(reason='no-command')
         if 'nie' in tokens[:index]:
             return Command(reason='negation')
-        if tokens[:index] not in ([], ['prosze']):
+        if not self.allows_prefix(tokens[:index]):
             return Command(reason='outside-grammar')
         target, position, error = self.split_position(' '.join(text.split()[index+width:]))
         if error:
@@ -40,12 +47,6 @@ class Strategy(Language):
         if intent == 'position' and tail[:1] in (['pozycje'], ['pozycja']):
             target = ' '.join(target.split()[1:])
         return Command(intent, target, position=position)
-
-    def warmup(self):
-        self.lemma('lampę')
-        self.forms('lampa')
-        self.forms('pokój')
-        self._number_words()
 
     def _head_lemma(self, alias):
         """(lemma, numbers) of the alias head, or None when not safely inflectable."""
