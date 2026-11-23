@@ -2,244 +2,131 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Router: poprawna komenda → TOOLCALL",
+      "name": "Router: wybierz scenariusz",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/tools/debug_router.py",
       "args": [
-        "toolcall"
+        "${input:routerScenario}"
       ],
-      "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
       "env": {
         "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 1
       }
     },
     {
-      "name": "Router: poza gramatyką → PASS",
+      "name": "HA loop: full simulated pipeline",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/tools/debug_router.py",
+      "program": "${workspaceFolder}/tools/simulate_ha_loop.py",
       "args": [
-        "outside-grammar"
+        "${input:haScenario}",
+        "--step"
       ],
-      "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
       "env": {
         "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 2
       }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "routerScenario",
+      "type": "pickString",
+      "description": "Router debug scenario",
+      "options": [
+        {
+          "label": "toolcall — exact light in an exact area → TOOLCALL",
+          "value": "toolcall"
+        },
+        {
+          "label": "outside-grammar — two actions in one sentence → PASS",
+          "value": "outside-grammar"
+        },
+        {
+          "label": "negation — explicit negation → CLARIFY",
+          "value": "negation"
+        },
+        {
+          "label": "ambiguous — same name in two areas → CLARIFY",
+          "value": "ambiguous"
+        },
+        {
+          "label": "no-target — unknown device → PASS",
+          "value": "no-target"
+        },
+        {
+          "label": "closest-match — larger STT name/area typo → TOOLCALL",
+          "value": "closest-match"
+        },
+        {
+          "label": "prefix — unknown leading phrase before the verb → TOOLCALL",
+          "value": "prefix"
+        },
+        {
+          "label": "blocked-prefix — condition/question prefix → PASS",
+          "value": "blocked-prefix"
+        },
+        {
+          "label": "position — absolute cover position → TOOLCALL",
+          "value": "position"
+        },
+        {
+          "label": "position-unavailable — cover position without a position tool → CLARIFY",
+          "value": "position-unavailable"
+        },
+        {
+          "label": "invalid-position — absolute position outside 0-100 → CLARIFY",
+          "value": "invalid-position"
+        },
+        {
+          "label": "relative-position — relative cover change → PASS",
+          "value": "relative-position"
+        },
+        {
+          "label": "ack — single explicit tool success → ACK",
+          "value": "ack"
+        },
+        {
+          "label": "english — English command with the English strategy → TOOLCALL",
+          "value": "english"
+        },
+        {
+          "label": "catalog-unavailable — no HA overview in messages → PASS",
+          "value": "catalog-unavailable"
+        }
+      ]
     },
     {
-      "name": "Router: negacja → CLARIFY",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/tools/debug_router.py",
-      "args": [
-        "negation"
-      ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 3
-      }
-    },
-    {
-      "name": "Router: niejednoznaczny target → CLARIFY",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/tools/debug_router.py",
-      "args": [
-        "ambiguous"
-      ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 4
-      }
-    },
-    {
-      "name": "Router: pozycja rolety → TOOLCALL",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/tools/debug_router.py",
-      "args": [
-        "position"
-      ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 5
-      }
-    },
-    {
-      "name": "Router: pozycja poza zakresem → CLARIFY",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/tools/debug_router.py",
-      "args": [
-        "invalid-position"
-      ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 6
-      }
-    },
-    {
-      "name": "Router: brak narzędzia pozycji → CLARIFY",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/tools/debug_router.py",
-      "args": [
-        "position-unavailable"
-      ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 7
-      }
-    },
-    {
-      "name": "Router: wynik narzędzia → ACK",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/tools/debug_router.py",
-      "args": [
-        "ack"
-      ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 8
-      }
-    },
-    {
-      "name": "Router: komenda EN → TOOLCALL",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/tools/debug_router.py",
-      "args": [
-        "english"
-      ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 9
-      }
-    },
-    {
-      "name": "Router: closest match → TOOLCALL",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/tools/debug_router.py",
-      "args": [
-        "closest-match"
-      ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 10
-      }
-    },
-    {
-      "name": "Router: prefix → TOOLCALL",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/tools/debug_router.py",
-      "args": [
-        "prefix"
-      ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 11
-      }
-    },
-    {
-      "name": "Router: blocked prefix → PASS",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/tools/debug_router.py",
-      "args": [
-        "blocked-prefix"
-      ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "stopOnEntry": false,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
-      },
-      "presentation": {
-        "group": "Router",
-        "order": 12
-      }
+      "id": "haScenario",
+      "type": "pickString",
+      "description": "HA loop scenario",
+      "options": [
+        {
+          "label": "router-toolcall — router tool call -> HA -> ACK",
+          "value": "router-toolcall"
+        },
+        {
+          "label": "router-cover — router position tool call -> HA -> ACK",
+          "value": "router-cover"
+        },
+        {
+          "label": "router-clarify — local clarification, no tool",
+          "value": "router-clarify"
+        },
+        {
+          "label": "fallback-text — router passes -> fake LLM text",
+          "value": "fallback-text"
+        },
+        {
+          "label": "fallback-toolcall — router passes -> fake LLM tool call",
+          "value": "fallback-toolcall"
+        },
+        {
+          "label": "tool-error — tool fails -> LLM explains",
+          "value": "tool-error"
+        }
+      ]
     }
   ]
 }

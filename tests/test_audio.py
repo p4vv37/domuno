@@ -1,4 +1,4 @@
-"""Real audio handlers with fake protocol/model adapters. No network or hardware."""
+"""Real audio handlers and Whisper prompt planning with fake adapters. No network or hardware."""
 import ast
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, Future
@@ -12,8 +12,11 @@ from pathlib import Path
 import time
 from types import SimpleNamespace
 import unittest
+import sys
 
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'stt'))
+from qnn_whisper_engine import forced_decoder_token  # noqa: E402
 try:
     import numpy as np
 except ImportError:
@@ -276,6 +279,21 @@ class TTSTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await handler.disconnect()
             await asyncio.to_thread(worker.close)
+
+
+class PromptPlanTests(unittest.TestCase):
+    def test_control_prefix_then_prompt_then_free_generation(self):
+        prefix = (10, 11, 12, 13)
+        prompt = (20, 21)
+        self.assertEqual(
+            [forced_decoder_token(prefix, prompt, step) for step in range(7)],
+            [11, 12, 13, 20, 21, None, None])
+
+    def test_empty_prompt_starts_free_generation_after_control_tokens(self):
+        prefix = (10, 11, 12, 13)
+        self.assertEqual(
+            [forced_decoder_token(prefix, (), step) for step in range(5)],
+            [11, 12, 13, None, None])
 
 
 if __name__=='__main__': unittest.main()

@@ -217,32 +217,8 @@ needs and should be preferred.
 | `STT_PROVIDER`, `TTS_PROVIDER` | Apply during a planned stack installation; external stages remain separately managed |
 | Qwen model/context/runtime settings | Update the backend separately and perform a controlled cold boot |
 
-Gateway-only update, for an existing working deployment:
-
-```bash
-set -a
-. ./.env
-set +a
-FULL_STACK=0 NCTX=10240 GGUF= TOKENIZER= \
-  COUNTER_URL=http://127.0.0.1:18193/count ./setup.sh
-```
-
-This creates/updates `qwen-ha-gateway.service`, installs its Python dependencies
-and restarts only the gateway. It does not start or restart Qwen, Whisper, TTS or
-LVA. Do not run `./run.sh start` over an old deployment with different containers
-or unit drop-ins.
-
-The generated user units are:
-
-| Unit | Purpose |
-| --- | --- |
-| `qwen25-3b-backend.service` | GenieX/Qwen backend, one cold load per boot, readiness probe |
-| `qwen-ha-counter.service` | CPU prompt counter (only for a local GGUF + tokenizer) |
-| `qwen-ha-gateway.service` | OpenAI proxy, router, metrics and diagnostics |
-| `qwen25-whisper-npu.service` | Starts Whisper only after Qwen is ready |
-
-TTS (`tts-pocket-pl`) and LVA (`linux-voice-assistant`) use Docker restart
-policies.
+For the gateway-only update command, generated unit list and image rebuild
+steps, see [Operations](operations.md#updating-an-existing-deployment).
 
 ## Ports
 

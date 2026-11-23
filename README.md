@@ -338,40 +338,9 @@ More detail, log locations and safe reporting: [docs/troubleshooting.md](docs/tr
 
 ## Development
 
-Run the offline tests without a board, models or network:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
-```
-
-Use `.venv/bin/python` to exercise the installed `simplemma`. Number
-normalization tests require `num2words==0.5.14`; the TTS image includes it.
-Protocol tests use fake models. The NPU/ARM64 paths still need the target board.
-To step through `decide()` on a PC, use the synthetic harness and the VS Code /
-PyCharm setup in [docs/debugging-router.md](docs/debugging-router.md). See
-[CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR; hardware-specific results
-need to state what was actually tested.
-
-Code layout:
-
-```text
-run.sh / .env.example   public entry point and configuration
-setup.sh                internal installer (systemd units + uv venv)
-llm/backend.py          GenieX version check, boot guard, readiness
-stt/                    QNN Whisper engine, profile validation, Wyoming server
-gateway/                OpenAI proxy, prompt budget, router, metrics
-tts-pocket-wyoming/     Rust TTS adapter, text streaming, PCM delivery
-lva/                    Linux Voice Assistant compose configuration
-tools/                  offline router debug harness
-tests/                  offline unit and integration-style tests
-docs/                   configuration, operations, router, debugging, performance
-```
-
-Start reading at `gateway/qwen_npu_gateway.py`, then
-`gateway/qwen_context_catalog.py` (HA overview parsing) and
-`gateway/qwen_decision.py` (routing and tool validation). For audio, start with
-the Wyoming handlers, then `stt/qnn_whisper_engine.py` or
-`tts-pocket-wyoming/rust_tts_backend.py`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the test command, repository layout,
+reading order and review process. To step through `decide()` on a PC, use
+[docs/debugging-router.md](docs/debugging-router.md).
 
 ## Documentation
 

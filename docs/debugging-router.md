@@ -101,22 +101,15 @@ args:     {"name": "Lampa", "domain": ["light"], "area": "Salon"}
    - on `command = language.parse(utterance)`,
    - on `targets = resolve(...)`,
    - on `function = _action_tool(...)`.
-5. Open **Run and Debug** and choose one of:
-   - `Router: poprawna komenda → TOOLCALL`
-   - `Router: poza gramatyką → PASS`
-   - `Router: negacja → CLARIFY`
-   - `Router: niejednoznaczny target → CLARIFY`
-   - `Router: pozycja rolety → TOOLCALL`
-   - `Router: pozycja poza zakresem → CLARIFY`
-   - `Router: brak narzędzia pozycji → CLARIFY`
-   - `Router: wynik narzędzia → ACK`
-   - `Router: komenda EN → TOOLCALL`
+5. Open **Run and Debug**, choose `Router: wybierz scenariusz`, and pick a
+   scenario from the picker. The picker covers all 15 scenarios listed above,
+   including the position, English, closest-match and catalog-unavailable cases.
 6. Press **F5**. Use **F10** (step over), **F11** (step into), **Shift+F11**
    (step out). Inspect `command`, `targets`, `entity`, `function` and
    `arguments` in the Variables panel.
 
-The committed [.vscode/launch.json](../.vscode/launch.json) already contains
-these configurations. If your VS Code uses the older Python extension and does
+The committed [.vscode/launch.json](../.vscode/launch.json) contains this
+picker configuration. If your VS Code uses the older Python extension and does
 not recognise `"type": "debugpy"`, replace it with `"type": "python"`.
 
 ## 4. PyCharm Community
@@ -135,7 +128,40 @@ Flask features are needed.
    - Interpreter: the `.venv` interpreter
 5. Set a breakpoint in `gateway/qwen_decision.py` and choose **Debug**.
 
-## 5. What to watch while stepping
+## 5. Full HA loop
+
+`tools/simulate_ha_loop.py` walks through the complete conversation without a
+board. It starts the real gateway handler with a synthetic HA catalog and a fake
+GenieX upstream, then plays HA's side: STT text, gateway request, optional tool
+call, simulated HA execution, tool result, gateway ACK or LLM fallback, and TTS.
+
+```bash
+python tools/simulate_ha_loop.py --list
+python tools/simulate_ha_loop.py router-toolcall --step
+```
+
+| Scenario | What it exercises |
+| --- | --- |
+| `router-toolcall` | router tool call → HA success → router ACK |
+| `router-cover` | `HassSetPosition` → HA success → router ACK |
+| `router-clarify` | ambiguous target → local clarification, no tool |
+| `fallback-text` | router passes → fake LLM text → TTS |
+| `fallback-toolcall` | router passes → fake LLM tool call → HA result → router ACK |
+| `tool-error` | tool fails → router passes the result → LLM explains |
+
+What is real: gateway HTTP handler, request normalization, prompt-budget gate,
+router, SSE encoding and ACK logic. What is simulated: LVA audio, STT, the
+GenieX model, HA tool execution and TTS. The script prints the component that
+handled each request, so use breakpoints in:
+
+- `tools/simulate_ha_loop.py` — each HA-side stage;
+- `gateway/qwen_npu_gateway.py` — `_post()` and `send_router_decision()`;
+- `gateway/qwen_decision.py` — `decide()`.
+
+The `HA loop: full simulated pipeline` VS Code configuration runs the picker with
+`--step`.
+
+## 6. What to watch while stepping
 
 In `decide()`:
 
@@ -158,7 +184,7 @@ Useful breakpoints:
 | `function = _action_tool(...)` | see tool choice |
 | `arguments = _arguments(...)` | see schema validation |
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
@@ -166,8 +192,9 @@ Useful breakpoints:
 | VS Code uses the wrong Python | `Python: Select Interpreter` → `.venv`. |
 | `debugpy` is not a valid type | Install Python Debugger, or change `type` to `python`. |
 | `polish-inflection` install fails | It is optional; the bundled scenarios use exact names and still run. |
-| No breakpoint hit | Make sure you opened the repo root and launched a `Router: ...` configuration, not just “Run Python File”. |
+| No breakpoint hit | Make sure you opened the repo root and launched `Router: wybierz scenariusz` or the HA loop configuration, not just “Run Python File”. |
 | Output differs from the table | Run `python tools/debug_router.py --list` and check optional packages; exact-name scenarios should not depend on them. |
 
-This is an offline harness. It does not validate HA connectivity, audio, NPU,
-Docker or the gateway HTTP layer.
+These are offline harnesses. They do not validate HA connectivity, audio, NPU,
+Docker, or the board-specific gateway process; the loop uses the real handler
+but a fake upstream.

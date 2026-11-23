@@ -66,7 +66,11 @@ points.
    ```
 
    Some tests are skipped without `numpy`, `simplemma`, `num2words` or
-   `polish-inflection`. CI installs them; a local `.venv` is fine too.
+   `polish-inflection`. CI installs them; a local `.venv` is fine too. Use
+   `.venv/bin/python` to exercise the installed `simplemma`; number normalization
+   tests require `num2words==0.5.14`. To step through the router on a PC, use the
+   synthetic harness and the VS Code / PyCharm setup in
+   [docs/debugging-router.md](docs/debugging-router.md).
 
 4. If you changed board, NPU, Docker, audio or systemd behavior, test on the
    board and describe the result. "Not tested on hardware" is acceptable when
@@ -79,6 +83,27 @@ points.
 
 There is no Contributor License Agreement. Contributions are accepted under the
 repository's MIT license.
+
+## Repository layout
+
+```text
+run.sh / .env.example   public entry point and configuration
+setup.sh                internal installer (systemd units + uv venv)
+llm/backend.py          GenieX version check, boot guard, readiness
+stt/                    QNN Whisper engine, profile validation, Wyoming server
+gateway/                OpenAI proxy, prompt budget, router, metrics
+tts-pocket-wyoming/     Rust TTS adapter, text streaming, PCM delivery
+lva/                    Linux Voice Assistant compose configuration
+tools/                  offline router and full HA-loop debug harnesses
+tests/                  offline unit and integration-style tests
+docs/                   configuration, operations, router, debugging, performance
+```
+
+Start reading at `gateway/qwen_npu_gateway.py`, then
+`gateway/qwen_context_catalog.py` (HA overview parsing) and
+`gateway/qwen_decision.py` (routing and tool validation). For audio, start with
+the Wyoming handlers, then `stt/qnn_whisper_engine.py` or
+`tts-pocket-wyoming/rust_tts_backend.py`.
 
 ## How to report a bug
 

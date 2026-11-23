@@ -24,3 +24,9 @@ assets/
 
 # target-specific vendor runtime
 stt/runtime/
+
+# local editor state; shared project files are tracked
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json

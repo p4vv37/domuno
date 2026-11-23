@@ -269,7 +269,17 @@ a warning alone as a failed load; use the probe result and a real HA request.
 ## systemd and logs
 
 The installer enables the Qwen and gateway units plus the selected STT/counter
-units. TTS and LVA use Docker restart policies. To start user services without logging in:
+units. The generated user units are:
+
+| Unit | Purpose |
+| --- | --- |
+| `qwen25-3b-backend.service` | GenieX/Qwen backend, one cold load per boot, readiness probe |
+| `qwen-ha-counter.service` | CPU prompt counter (only for a local GGUF + tokenizer) |
+| `qwen-ha-gateway.service` | OpenAI proxy, router, metrics and diagnostics |
+| `qwen25-whisper-npu.service` | Starts Whisper only after Qwen is ready |
+
+TTS (`tts-pocket-pl`) and LVA (`linux-voice-assistant`) use Docker restart
+policies. To start user services without logging in:
 
 ```bash
 sudo loginctl enable-linger "$USER"
