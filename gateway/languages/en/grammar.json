@@ -1,0 +1,17 @@
+{
+  "area_prepositions": ["in", "at"],
+  "position_prepositions": ["to", "at"],
+  "reserved_synonym_words": ["not", "do", "please", "in", "at", "and", "then", "if", "after", "to", "by"],
+  "prefix_blockers": [
+    "not", "don't", "never", "if", "when", "whether", "and", "or", "but",
+    "then", "after", "before", "could", "can", "would", "will", "do",
+    "does", "did", "why", "how", "what", "where", "who"
+  ],
+  "tail_blockers": ["and", "then", "if", "after", "to", "by", "not", "don't", "never"],
+  "negations": ["not", "don't", "never"],
+  "percentage_unit_pattern": "percent|per cent",
+  "percentage_prefix": "percent",
+  "normalize_apostrophes": true,
+  "leading_articles": ["the"],
+  "warmup_word": "home"
+}

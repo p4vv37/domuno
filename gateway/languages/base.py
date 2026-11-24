@@ -1,9 +1,8 @@
 """Small language Strategy interface. No HA catalogs or model dependencies."""
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
-from importlib import import_module
 import json
-import os
 from pathlib import Path
 import re
 
@@ -76,23 +75,80 @@ class Command:
     position: int | None = None
 
 
-class Language:
+@dataclass(frozen=True)
+class Grammar:
+    """Bundled single-language rules, separate from replaceable vocabulary."""
+    area_prepositions: frozenset[str]
+    position_prepositions: frozenset[str]
+    reserved_synonym_words: frozenset[str]
+    prefix_blockers: frozenset[str]
+    tail_blockers: frozenset[str]
+    negations: frozenset[str]
+    percentage_unit_pattern: str
+    percentage_prefix: str
+    warmup_word: str
+    position_labels: frozenset[str] = frozenset()
+    leading_articles: frozenset[str] = frozenset()
+    normalize_apostrophes: bool = False
+
+    @classmethod
+    def load(cls, path):
+        with path.open(encoding='utf-8') as source:
+            data = json.load(source)
+        word_sets = ('area_prepositions', 'position_prepositions', 'reserved_synonym_words',
+                     'prefix_blockers', 'tail_blockers', 'negations')
+        optional_sets = ('position_labels', 'leading_articles')
+        strings = ('percentage_unit_pattern', 'percentage_prefix', 'warmup_word')
+        required = set(word_sets + strings)
+        allowed = required | set(optional_sets) | {'normalize_apostrophes'}
+        if not isinstance(data, dict) or not required <= data.keys() <= allowed:
+            raise ValueError(f'{path}: missing or unknown grammar keys')
+        for key in word_sets + optional_sets:
+            if key not in data:
+                continue
+            words = data[key]
+            if not isinstance(words, list) or not all(
+                    isinstance(word, str) and len(word.split()) == 1 for word in words):
+                raise ValueError(f'{path}: {key} must be a list of single words')
+            data[key] = frozenset(normalize(word) for word in words)
+        for key in strings:
+            if not isinstance(data[key], str) or not data[key].strip():
+                raise ValueError(f'{path}: {key} must be a nonempty string')
+        if not isinstance(data.get('normalize_apostrophes', False), bool):
+            raise ValueError(f'{path}: normalize_apostrophes must be a boolean')
+        data['percentage_prefix'] = normalize(data['percentage_prefix'])
+        try:
+            re.compile(data['percentage_unit_pattern'])
+        except re.error as exc:
+            raise ValueError(f'{path}: invalid percentage_unit_pattern') from exc
+        return cls(**data)
+
+
+class Language(ABC):
     """Language strategies parse commands and prepare names, never choose devices."""
-    code = ''
-    area_prepositions = ()
-    reserved = frozenset()
-    supports_forms = False
-    percentage_unit = ''
-    position_prepositions = ()
-    prefix_blockers = frozenset()
+    @property
+    @abstractmethod
+    def code(self):
+        """Language code used by the dictionaries."""
+
+    @property
+    @abstractmethod
+    def vocabulary_path(self):
+        """Path to this strategy's bundled vocabulary."""
+
     max_prefix_words = 4
 
     def __init__(self, vocabulary=None):
-        path = vocabulary or Path(__file__).with_name('router_' + self.code + '.json')
-        self.vocabulary = load_vocabulary(path, self.reserved)
+        self.grammar = Grammar.load(self.vocabulary_path.with_name('grammar.json'))
+        path = vocabulary or self.vocabulary_path
+        self.vocabulary = load_vocabulary(path, self.grammar.reserved_synonym_words)
         self.commands = sorted(((intent, phrase.split())
                                 for intent, phrases in self.vocabulary['commands'].items()
                                 for phrase in phrases), key=lambda item: (-len(item[1]), item[1]))
+
+    @property
+    def area_prepositions(self):
+        return self.grammar.area_prepositions
 
     normalize = staticmethod(normalize)
 
@@ -101,6 +157,11 @@ class Language:
         return simplemma is not None
 
     def lemma(self, text):
+        if self.grammar.leading_articles:
+            words = text.split()
+            if words and words[0].casefold() in self.grammar.leading_articles:
+                words = words[1:]
+            text = ' '.join(words)
         if simplemma is not None:
             text = ' '.join(simplemma.lemmatize(token, lang=self.code) for token in text.split())
         return self.normalize(text)
@@ -117,7 +178,7 @@ class Language:
         """
         if len(prefix) > self.max_prefix_words:
             return False
-        return not any(word in self.prefix_blockers for word in prefix)
+        return not any(word in self.grammar.prefix_blockers for word in prefix)
 
     def find_command(self, tokens):
         for index in range(len(tokens)):
@@ -127,7 +188,36 @@ class Language:
         return None, -1, 0
 
     def parse(self, text):
-        raise NotImplementedError
+        """Return a Command; override only for a different parsing algorithm."""
+        return self.parse_simple(text)
+
+    def parse_simple(self, text):
+        """Parse one action; strategies supply grammar rules or implement parse themselves."""
+        rules = self.grammar
+        tokens = self.normalize(text)
+        if rules.normalize_apostrophes:
+            tokens = tokens.replace('’', "'")
+        tokens = tokens.split()
+        intent, index, width = self.find_command(tokens)
+        if intent is None:
+            return Command(reason='no-command')
+        prefix = tokens[:index]
+        if any(word in rules.negations for word in prefix):
+            return Command(reason='negation')
+        if not self.allows_prefix(prefix):
+            return Command(reason='outside-grammar')
+        target, position, error = self.split_position(' '.join(text.split()[index+width:]))
+        if error:
+            return Command(intent=intent, target=target, reason=error, position=position)
+        tail = self.normalize(target).split()
+        if (any(word in rules.tail_blockers for word in tail)
+                or any('%' in word or word.startswith(rules.percentage_prefix) for word in tail)
+                or self.find_command(tail)[0] is not None
+                or (intent == 'position' and position is None)):
+            return Command(reason='outside-grammar')
+        if intent == 'position' and tail and tail[0] in rules.position_labels:
+            target = ' '.join(target.split()[1:])
+        return Command(intent, target, position=position)
 
     @lru_cache(maxsize=1)
     def _number_words(self):
@@ -147,7 +237,7 @@ class Language:
         position whose value is outside 0-100. Unknown, fractional or relative
         syntax returns no error here and is classified by the language grammar.
         """
-        unit = re.search(r'(?:%|\b(?:' + self.percentage_unit + r'))\s*$', text, re.IGNORECASE)
+        unit = re.search(r'(?:%|\b(?:' + self.grammar.percentage_unit_pattern + r'))\s*$', text, re.IGNORECASE)
         if unit is None:
             return text, None, None
         words = text[:unit.start()].split()
@@ -162,7 +252,7 @@ class Language:
             if value is None:
                 continue
             target = words[:-count]
-            if not target or self.normalize(target[-1]) not in self.position_prepositions:
+            if not target or self.normalize(target[-1]) not in self.grammar.position_prepositions:
                 continue
             target.pop()
             if not target:
@@ -176,28 +266,13 @@ class Language:
         responses = self.vocabulary['responses']
         return responses['clarifications'].get(reason, responses['default_clarification'])
 
-    warmup_word = 'home'
-
     def warmup(self):
         """Load lazy lemma/inflection/number data before the first request.
 
         The libraries expose no explicit language loader, so one generic word
         primes them. This is startup work, not routing data.
         """
-        self.lemma(self.warmup_word)
-        self.forms(self.warmup_word)
+        self.lemma(self.grammar.warmup_word)
+        self.forms(self.grammar.warmup_word)
         self._number_words()
 
-
-@lru_cache(maxsize=4)
-def get_language(code='pl', vocabulary=None):
-    """A fixed two-strategy factory, not a plugin discovery framework."""
-    if code not in ('pl', 'en'):
-        raise ValueError('AGENT_LANGUAGE must be pl or en')
-    module = import_module('qwen_language_' + code)
-    return module.Strategy(vocabulary)
-
-
-def default_language():
-    return get_language(os.environ.get('AGENT_LANGUAGE', 'pl'),
-                        os.environ.get('ROUTER_VOCABULARY') or None)

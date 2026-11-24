@@ -210,7 +210,7 @@ another generic OpenAI-compatible integration may work, but is not tested.
    download it and restart HA.
 2. Settings → Devices & services → **Add Integration** → **Local OpenAI LLM**.
    Server URL: `http://<Arduino-IP>:18191/v1`; API key: empty unless
-   `QWEN_GATEWAY_API_KEY` is set; server type: `llama.cpp`; model:
+   `GATEWAY_API_KEY` is set; server type: `llama.cpp`; model:
    `bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_0`. Enable **Device control** tools.
 3. Add **Wyoming Protocol** for `<Arduino-IP>:10301` (STT) and
    `<Arduino-IP>:10201` (TTS).
@@ -267,7 +267,7 @@ values:
 | `CACHE_POLICY` | `reuse` | `reuse` on GenieX 0.11.0; `reset` for 0.9.3 |
 | `RESPONSE_STYLE` | `concise` | Short voice answers; `original` for A/B |
 | `DECIDE_APPLY` | `1` | Let the router answer recognized commands |
-| `QWEN_GATEWAY_API_KEY` | empty | Optional bearer token |
+| `GATEWAY_API_KEY` | empty | Optional bearer token |
 
 Every variable, including diagnostics and advanced installer settings, is
 documented in [docs/configuration.md](docs/configuration.md).
@@ -324,7 +324,7 @@ More detail, log locations and safe reporting: [docs/troubleshooting.md](docs/tr
 - Inference is local. The repository does not send prompts, audio or transcripts
   to a cloud service.
 - The gateway listens on the LAN and is **unauthenticated by default**, matching
-  the local-only design. Set `QWEN_GATEWAY_API_KEY` in `.env` and in HA if your
+  the local-only design. Set `GATEWAY_API_KEY` in `.env` and in HA if your
   network is not trusted. Never port-forward it to the Internet.
 - Audio is not saved. Raw requests, router transcripts and request captures are
   off by default or explicitly opt-in, stored under `logs/` with private
@@ -341,6 +341,55 @@ More detail, log locations and safe reporting: [docs/troubleshooting.md](docs/tr
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the test command, repository layout,
 reading order and review process. To step through `decide()` on a PC, use
 [docs/debugging-router.md](docs/debugging-router.md).
+
+### How to add a router language
+
+Start with a vocabulary: list the synonymous words or phrases that map to each
+router intent (`close`, `open`, `on`, `off`, and optionally `position`). Add the
+spoken success message and clarifications. These keys describe router intents,
+not Home Assistant tool names. Here is the bundled [Polish example](gateway/languages/pl/vocabulary.json):
+
+```json
+{
+  "commands": {
+    "close": ["zamknij", "zamknijcie", "zamykaj", "zamknąć", "zasłoń", "zasuń"],
+    "open": ["otwórz", "otwórzcie", "otwieraj", "otworzyć", "odsłoń", "odsuń"],
+    "on": ["włącz", "włączcie", "zapal", "zaświeć", "uruchom"],
+    "off": ["wyłącz", "wyłączcie", "zgaś"],
+    "position": ["ustaw"]
+  },
+  "responses": {
+    "success": "Wykonano",
+    "default_clarification": "Nie mogę jednoznacznie wykonać tego polecenia.",
+    "clarifications": {
+      "negation": "OK, nie wykonuję tej akcji.",
+      "catalog-unavailable": "Nie mam teraz listy urządzeń.",
+      "no-target": "Nie znalazłem takiego urządzenia. Podaj dokładniejszą nazwę.",
+      "ambiguous-area": "Urządzenie ma kilka obszarów. Doprecyzuj jego nazwę w HA.",
+      "missing-area": "W którym pomieszczeniu mam to zrobić?",
+      "area-mismatch": "Nie ma takiego urządzenia w tym pomieszczeniu.",
+      "ambiguous-target": "Jest kilka pasujących urządzeń. Podaj dokładniejszą nazwę.",
+      "invalid-position": "Podaj pozycję jako pełny procent od zera do stu.",
+      "position-unavailable": "Nie mam zgodnego narzędzia do ustawienia pozycji tego urządzenia."
+    }
+  }
+}
+```
+
+- **Customize Polish or English:** copy the bundled vocabulary, edit the synonyms
+  or replies, set `ROUTER_VOCABULARY` to the copied file in `.env`, and restart
+  the gateway. Use the complete file, not a partial override.
+- **Add a new language in code:** create `gateway/languages/<code>/` with a
+  `vocabulary.json`, a bundled `grammar.json` (see the [Polish example](gateway/languages/pl/grammar.json)),
+  and a `Strategy` in `__init__.py` inheriting the shared
+  [`Language` interface](gateway/languages/base.py). Define `code` and
+  `vocabulary_path`. The default `parse()` uses the bundled rules; override it
+  only if the language needs a different parsing algorithm. Register the language once in the [language registry](gateway/languages/__init__.py);
+  the gateway, launcher and installer check the same registry. Add tests for
+  natural commands and phrases that must not trigger actions. Configure STT/TTS
+  separately; adding a router language does not add a speech recipe.
+
+See the [router guide](docs/router.md) for vocabulary validation and fallback behavior.
 
 ## Documentation
 

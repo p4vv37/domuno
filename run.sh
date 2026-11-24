@@ -9,7 +9,7 @@ case "${1:-help}" in
         shopt -s nullglob
         files=("$ROOT"/logs/metrics/metrics.jsonl*)
         (( ${#files[@]} )) || fail 'No metrics collected yet.'
-        exec python3 "$ROOT/gateway/qwen_latency_stats.py" "${files[@]}"
+        exec python3 "$ROOT/gateway/latency_stats.py" "${files[@]}"
         ;;
     check|prepare|prepare-audio|start|status|stop|sound-test) action=$1 ;;
     *) echo 'Usage: ./run.sh check | prepare | prepare-audio | start | status | stop | stats | sound-test'
@@ -19,18 +19,26 @@ esac
 set -a
 source .env
 NCTX="${NCTX:-10240}"
-TOKENIZER="${TOKENIZER:-$ROOT/assets/qwen-tokenizer}"
+recipe_tokenizer=0
+if [[ -z ${TOKENIZER:-} && -z ${COUNTER_URL:-} ]]; then
+    TOKENIZER="$ROOT/assets/qwen-tokenizer"
+    recipe_tokenizer=1
+fi
 GENIEX_BIN="${GENIEX_BIN:-$HOME/.local/bin/geniex}"
 CACHE_POLICY="${CACHE_POLICY:-reuse}"
 AGENT_LANGUAGE="${AGENT_LANGUAGE:-pl}"
 STT_PROVIDER="${STT_PROVIDER:-whisper-qnn}"
 TTS_PROVIDER="${TTS_PROVIDER:-pocket-pl}"
 set +a
-[[ $AGENT_LANGUAGE == pl || $AGENT_LANGUAGE == en ]] || fail 'AGENT_LANGUAGE must be pl or en.'
+case "$action" in
+    check|prepare|start|status|stop)
+        (cd "$ROOT/gateway" && python3 -B -m languages -- "$AGENT_LANGUAGE") ;;
+esac
+
 [[ $STT_PROVIDER == whisper-qnn || $STT_PROVIDER == external ]] || fail 'STT_PROVIDER must be whisper-qnn or external.'
 [[ $TTS_PROVIDER == pocket-pl || $TTS_PROVIDER == external ]] || fail 'TTS_PROVIDER must be pocket-pl or external.'
 if [[ $AGENT_LANGUAGE != pl && ( $STT_PROVIDER != external || $TTS_PROVIDER != external ) ]]; then
-    fail 'For English, select external STT and TTS and configure their language in Home Assistant.'
+    fail 'Local speech recipes require Polish; select external STT and TTS for other languages.'
 fi
 compose() { docker compose --env-file "$ROOT/.env" -f "$ROOT/$1/docker-compose.yml" "${@:2}"; }
 
@@ -63,7 +71,7 @@ prepare-audio)
 sound-test)
     sound_python=python3
     [[ ! -x "$ROOT/.venv/bin/python" ]] || sound_python="$ROOT/.venv/bin/python"
-    exec "$sound_python" "$ROOT/gateway/qwen_wait_sound.py"
+    exec "$sound_python" "$ROOT/gateway/wait_sound.py"
     ;;
 check)
     errors=0
@@ -78,15 +86,11 @@ check)
     check 'Docker Compose plugin' docker compose version
     check 'user systemd session' systemctl --user show-environment
     check 'Qwen GGUF (GGUF in .env)' test -f "${GGUF:-}"
-    check 'Qwen tokenizer' test -f "$TOKENIZER/tokenizer.json"
     if [[ -n ${COUNTER_URL:-} ]]; then
         check 'Prompt counter service (COUNTER_URL)' \
             curl --fail --silent --show-error --max-time 5 "${COUNTER_URL%/count}/healthz"
-    elif [[ -n ${GGUF:-} && -f "$TOKENIZER/tokenizer.json" ]]; then
-        echo 'OK: prompt counter inputs (local GGUF + tokenizer)'
     else
-        echo 'MISSING: prompt counter (set GGUF + TOKENIZER or COUNTER_URL)'
-        errors=1
+        check 'Prompt counter tokenizer (TOKENIZER/tokenizer.json)' test -f "$TOKENIZER/tokenizer.json"
     fi
     for device in /dev/fastrpc-cdsp /dev/fastrpc-cdsp-secure /dev/dma_heap/system /dev/dma_heap/qcom,system; do
         check "NPU device $device" test -c "$device"
@@ -124,11 +128,16 @@ check)
 prepare)
     [[ $(uname -m) == aarch64 ]] || fail 'Run preparation on the ARM64 Arduino.'
     [[ -x $GENIEX_BIN ]] || fail 'Install GenieX following the README.'
+    if [[ -z ${COUNTER_URL:-} ]] && (( ! recipe_tokenizer )) && [[ ! -f $TOKENIZER/tokenizer.json ]]; then
+        fail 'Provide tokenizer.json in the configured TOKENIZER directory, or leave TOKENIZER empty for the bundled recipe.'
+    fi
     "$GENIEX_BIN" --skip-update pull bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_0
-    mkdir -p "$TOKENIZER"
-    for file in tokenizer.json tokenizer_config.json special_tokens_map.json; do
-        [[ -f $TOKENIZER/$file ]] || curl -fL "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/resolve/main/$file" -o "$TOKENIZER/$file"
-    done
+    if (( recipe_tokenizer )); then
+        mkdir -p "$TOKENIZER"
+        for file in tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            [[ -f $TOKENIZER/$file ]] || curl -fL "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/resolve/main/$file" -o "$TOKENIZER/$file"
+        done
+    fi
     if [[ $STT_PROVIDER == whisper-qnn && ! -d stt/assets ]]; then
         python3 stt/download_whisper_turbo_on_board.py --output "$ROOT/stt/assets" --staging /dev/shm/ha-whisper-download
     fi

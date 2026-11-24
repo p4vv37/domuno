@@ -9,7 +9,7 @@ import statistics
 import sys
 from datetime import datetime
 
-from qwen_metrics import number
+from gateway_metrics import number
 
 TIMINGS = ('total_ms', 'router_ms', 'audit_ms', 'capture_ms', 'budget_ms', 'queue_ms', 'reset_ms', 'wait_sound_ms',
            'backend_ms', 'ttft_ms', 'prefill_ms', 'decode_ms',

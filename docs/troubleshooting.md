@@ -100,7 +100,7 @@ curl --fail --max-time 60 http://<Arduino-IP>:18191/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Odpowiedz jednym słowem: test"}],"max_tokens":16}'
 ```
 
-If `QWEN_GATEWAY_API_KEY` is set, send `Authorization: Bearer <key>` from both HA
+If `GATEWAY_API_KEY` is set, send `Authorization: Bearer <key>` from both HA
 and `curl`. If HA is on another machine, do not bind `GATEWAY_HOST=127.0.0.1`.
 
 ## Microphone quality
@@ -134,7 +134,7 @@ microphone or a closer position may still beat any profile change.
 
 | Status | Cause | Fix |
 | --- | --- | --- |
-| `401` | Wrong/missing bearer token | Use the same `QWEN_GATEWAY_API_KEY` in `.env` and HA. |
+| `401` | Wrong/missing bearer token | Use the same `GATEWAY_API_KEY` in `.env` and HA. |
 | `413` | Prompt + output exceeds `NCTX` | Expose fewer entities or shorten tools; raise `NCTX` only with the counter. |
 | `429` | Another inference is running | Retry later; the gateway serializes inference. |
 | `502` | Backend unavailable/reset failed | Check Qwen/GenieX and the backend port. |

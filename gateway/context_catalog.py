@@ -62,6 +62,10 @@ class Catalog:
     provenance: Provenance
     detail: str | None      # reason code for UNRECOGNIZED
 
+    @property
+    def is_recognized(self):
+        return self.status == Status.RECOGNIZED
+
 
 _STATIC_PROVENANCE = Provenance(
     source='static-overview', trusted=False, complete='unknown',

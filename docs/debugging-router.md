@@ -1,12 +1,12 @@
 # Debugging the router
 
-This walks through `qwen_decision.decide()` on a normal PC. It needs no board,
+This walks through `command_router.decide()` on a normal PC. It needs no board,
 Docker, model, NPU or network access. The harness uses synthetic HA entities and
 tool schemas.
 
 The debug entry point is [tools/debug_router.py](../tools/debug_router.py). It
 inserts `gateway/` into `sys.path`, builds a catalog with
-`qwen_context_catalog.parse_overview()`, and calls `decide()`.
+`context_catalog.parse_overview()`, and calls `decide()`.
 
 ## 1. Prepare the PC
 
@@ -20,7 +20,7 @@ cd domuno
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install simplemma==2.0.0 num2words==0.5.14
+python -m pip install simplemma==2.0.0 num2words==0.5.14 jsonschema==4.25.1 RapidFuzz==3.14.1
 ```
 
 For inflected Polish names, optionally install:
@@ -37,7 +37,7 @@ cd domuno
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install simplemma==2.0.0 num2words==0.5.14
+python -m pip install simplemma==2.0.0 num2words==0.5.14 jsonschema==4.25.1 RapidFuzz==3.14.1
 ```
 
 If PowerShell blocks activation, either run
@@ -96,7 +96,7 @@ args:     {"name": "Lampa", "domain": ["light"], "area": "Salon"}
    `qwen-npu` directory; `${workspaceFolder}` must point at the repo.
 3. Run `Python: Select Interpreter` and choose `.venv/bin/python`
    (Linux/macOS) or `.venv\Scripts\python.exe` (Windows).
-4. Open `gateway/qwen_decision.py` and set a breakpoint:
+4. Open `gateway/command_router.py` and set a breakpoint:
    - at the start of `decide()`, or
    - on `command = language.parse(utterance)`,
    - on `targets = resolve(...)`,
@@ -126,7 +126,7 @@ Flask features are needed.
    - Parameters: `toolcall` (or another scenario)
    - Working directory: the repository root
    - Interpreter: the `.venv` interpreter
-5. Set a breakpoint in `gateway/qwen_decision.py` and choose **Debug**.
+5. Set a breakpoint in `gateway/command_router.py` and choose **Debug**.
 
 ## 5. Full HA loop
 
@@ -155,8 +155,8 @@ GenieX model, HA tool execution and TTS. The script prints the component that
 handled each request, so use breakpoints in:
 
 - `tools/simulate_ha_loop.py` — each HA-side stage;
-- `gateway/qwen_npu_gateway.py` — `_post()` and `send_router_decision()`;
-- `gateway/qwen_decision.py` — `decide()`.
+- `gateway/chat_gateway.py` — `_post()` and `send_router_decision()`;
+- `gateway/command_router.py` — `decide()`.
 
 The `HA loop: full simulated pipeline` VS Code configuration runs the picker with
 `--step`.
@@ -188,7 +188,7 @@ Useful breakpoints:
 
 | Symptom | Fix |
 | --- | --- |
-| `ModuleNotFoundError: qwen_decision` | Run from the repository root; the harness adds `gateway/` to `sys.path`. |
+| `ModuleNotFoundError: command_router` | Run from the repository root; the harness adds `gateway/` to `sys.path`. |
 | VS Code uses the wrong Python | `Python: Select Interpreter` → `.venv`. |
 | `debugpy` is not a valid type | Install Python Debugger, or change `type` to `python`. |
 | `polish-inflection` install fails | It is optional; the bundled scenarios use exact names and still run. |

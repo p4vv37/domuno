@@ -3,7 +3,7 @@
 
 Only model catalog and chat completions are exposed. SSE bytes are forwarded
 unchanged, with optional bounded observation for payload-free metrics.
-The LAN listener is unauthenticated unless QWEN_GATEWAY_API_KEY is set. Do not expose it to the public Internet.
+The LAN listener is unauthenticated unless GATEWAY_API_KEY is set. Do not expose it to the public Internet.
 """
 import argparse
 import hmac
@@ -22,7 +22,7 @@ import threading
 from urllib.parse import urlsplit
 from datetime import datetime
 
-from qwen_metrics import RequestMetrics, ResponseObserver
+from gateway_metrics import RequestMetrics, ResponseObserver
 
 MODEL = 'bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_0'
 MAX_BODY = 2 * 1024 * 1024
@@ -329,7 +329,7 @@ def make_handler(upstream, model=MODEL, nctx=10240, api_key='', prompt_counter=N
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.0'  # EOF frames both SSE and ordinary responses.
-        server_version = 'QwenNpuGateway/1'
+        server_version = 'DomunoGateway/1'
 
         def send_response(self, code, message=None):
             if getattr(self, 'metrics', None) is not None:
@@ -513,16 +513,9 @@ def make_handler(upstream, model=MODEL, nctx=10240, api_key='', prompt_counter=N
                     prompt_tokens = prompt_counter(body)
                     if type(prompt_tokens) is not int or prompt_tokens < 0:
                         raise ValueError('Invalid token counter result')
-                except Exception as exc:
-                    # Only static, known validator categories: never log request data.
-                    categories = ('Unsupported request shape', 'Unsupported runtime profile',
-                                  'Unsupported tool choice', 'Unsupported parallel tool calls',
-                                  'Unsupported tools shape', 'Pinned tools mismatch',
-                                  'Unsupported messages shape', 'Unsupported message shape',
-                                  'Unsupported message role', 'Unsupported content shape',
-                                  'Unsupported tool calls shape', 'Invalid JSON shape')
-                    reason = str(exc) if str(exc) in categories else 'counter failure'
-                    print('BUDGET_REJECT: ' + reason, flush=True)
+                except Exception:
+                    # The counter may be external; never log its exception contents.
+                    print('BUDGET_REJECT: counter failure', flush=True)
                     self.error_json(503, 'Prompt budget verification unavailable; native backend was not contacted')
                     self.metrics.record['outcome'] = 'rejected'
                     return
@@ -652,13 +645,15 @@ def notify_ready():
 
 
 def main():
+    from languages import get_language, language_codes
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=18191)
     parser.add_argument('--upstream', default='http://127.0.0.1:18192')
     parser.add_argument('--model', default=MODEL)
     parser.add_argument('--nctx', type=int, default=10240)
-    parser.add_argument('--agent-language', choices=('pl', 'en'), default=os.environ.get('AGENT_LANGUAGE', 'pl'))
+    parser.add_argument('--agent-language', choices=language_codes(), default=os.environ.get('AGENT_LANGUAGE', 'pl'))
     parser.add_argument('--response-style', choices=('concise', 'original'), default='concise')
     parser.add_argument('--router-miss-log-dir', help='Opt-in private user transcripts for PASS decisions')
     parser.add_argument('--router-miss-until', help='Optional fixed transcript cutoff, overriding ROUTER_MISS_UNTIL')
@@ -673,8 +668,8 @@ def main():
     parser.add_argument('--request-capture-limit', help='Capture at most 1-20 incoming requests per process, overriding CONTEXT_CAPTURE_LIMIT')
     parser.add_argument('--decide-apply', action='store_true', help='Route recognized HA commands via the decision module instead of the LLM (default off)')
     args = parser.parse_args()
-    if args.agent_language not in ('pl', 'en'):
-        parser.error('AGENT_LANGUAGE must be pl or en')
+    if args.agent_language not in language_codes():
+        parser.error('AGENT_LANGUAGE must be one of: ' + ', '.join(language_codes()))
     if not 2048 <= args.nctx <= 10240:
         parser.error('nctx must be between 2048 and 10240')
     counter = None
@@ -692,7 +687,7 @@ def main():
     if counter is None:
         parser.error('A prompt counter is required: set GGUF + TOKENIZER or pass --prompt-counter-url')
     try:
-        from qwen_wait_sound import from_environment as wait_sound_from_environment
+        from wait_sound import from_environment as wait_sound_from_environment
         wait_sound = wait_sound_from_environment()
         miss_logger = router_miss_logger(args.router_miss_log_dir, args.router_miss_until)
         audit_dir = configured_log_directory(args.context_audit_dir, 'CONTEXT_AUDIT')
@@ -702,21 +697,21 @@ def main():
             raise ValueError('CONTEXT_CAPTURE_LIMIT must be between 1 and 20')
     except ValueError as exc:
         parser.error(str(exc))
-    key = os.environ.get('QWEN_GATEWAY_API_KEY', '')
+    # Preserve authentication on existing installations until .env is updated.
+    key = os.environ.get('GATEWAY_API_KEY') or os.environ.get('QWEN_GATEWAY_API_KEY', '')
     metrics_logger = MetricsLogger(args.metrics_dir) if args.metrics_dir else None
     context_auditor = None
     context_audit_fn = None
     if audit_dir:
-        from qwen_context_catalog import audit_request
+        from context_catalog import audit_request
         context_audit_fn = audit_request
         context_auditor = ContextAuditLogger(audit_dir)
     request_capture = RequestCaptureLogger(capture_dir, capture_limit) if capture_dir else None
     decision_fn = None
     clarify_fn = None
     if args.decide_apply or miss_logger is not None:
-        from qwen_language import get_language
-        from qwen_context_catalog import parse_overview
-        from qwen_decision import decide, clarify_text, warmup
+        from functools import partial
+        from command_router import decide_request, clarify_text, warmup
         # Validate vocabulary before the best-effort dictionary warmup. Invalid
         # configuration must stop startup, not turn every command into fallback.
         language = get_language(args.agent_language, os.environ.get('ROUTER_VOCABULARY') or None)
@@ -726,11 +721,8 @@ def main():
             print(json.dumps({'event': 'router_warmup', 'language': language.code, 'elapsed_ms': round((time.perf_counter()-began_warmup)*1000, 3)}), flush=True)
         except Exception:
             print('WARNING: router language warmup incomplete', file=sys.stderr, flush=True)
-        def decision_fn(body):
-            catalog = parse_overview(body['messages'])
-            return decide(body['messages'], catalog, body.get('tools'),
-                          tool_choice=body.get('tool_choice'), language=language)
-        clarify_fn = lambda reason: clarify_text(reason, language)
+        decision_fn = partial(decide_request, language=language)
+        clarify_fn = partial(clarify_text, language=language)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(args.upstream, args.model, args.nctx, key, prompt_counter=counter, context_auditor=context_auditor, context_audit_fn=context_audit_fn, decision_fn=decision_fn, decide_apply=args.decide_apply, clarify_text=clarify_fn, metrics_logger=metrics_logger, backend_version=args.backend_version, metrics_profile=args.metrics_profile, cache_policy=args.cache_policy, response_style=args.response_style, router_miss_logger=miss_logger, request_capture=request_capture, agent_language=args.agent_language, wait_sound=wait_sound))
     server.daemon_threads = True
     notify_ready()

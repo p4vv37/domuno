@@ -57,7 +57,7 @@ Use these values:
 | Field | Value |
 | --- | --- |
 | Server URL | `http://<Arduino-IP>:18191/v1` |
-| API key | Empty, unless `QWEN_GATEWAY_API_KEY` is set in `.env`; then the same token |
+| API key | Empty, unless `GATEWAY_API_KEY` is set in `.env`; then the same token |
 | Server type | `llama.cpp` (the tested option; the gateway speaks the same OpenAI shape) |
 | Model | `bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_0`, or your `MODEL` value |
 

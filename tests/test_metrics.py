@@ -23,10 +23,10 @@ def load(name, filename):
     return module
 
 
-metrics = load('qwen_metrics', 'qwen_metrics.py')
-gateway = load('metrics_gateway', 'qwen_npu_gateway.py')
-report = load('metrics_report', 'qwen_latency_stats.py')
-catalog = load('metrics_catalog', 'qwen_context_catalog.py')
+metrics = load('gateway_metrics', 'gateway_metrics.py')
+gateway = load('metrics_gateway', 'chat_gateway.py')
+report = load('metrics_report', 'latency_stats.py')
+catalog = load('metrics_catalog', 'context_catalog.py')
 
 
 def event(obj):
@@ -110,16 +110,15 @@ class ContextAuditTests(unittest.TestCase):
 class StartupTests(unittest.TestCase):
     def test_readiness_follows_language_warmup_and_socket_binding(self):
         events = []
-        decision = SimpleNamespace(decide=lambda *a, **kw: None,
+        decision = SimpleNamespace(decide_request=lambda *a, **kw: None,
                                    clarify_text=lambda *a: '', warmup=lambda language: events.append('warmup'))
-        catalog = SimpleNamespace(parse_overview=lambda _: None)
         class Server:
             def __init__(self, *args, **kwargs): events.append('bind')
             def serve_forever(self):
                 events.append('serve')
                 raise KeyboardInterrupt()
             def server_close(self): events.append('close')
-        with patch.dict(sys.modules, {'qwen_decision': decision, 'qwen_context_catalog': catalog}), \
+        with patch.dict(sys.modules, {'command_router': decision}), \
              patch.object(sys, 'argv', ['gateway', '--decide-apply', '--prompt-counter-url', 'http://127.0.0.1:1/count']), \
              patch.object(gateway, 'ThreadingHTTPServer', Server), \
              patch.object(gateway, 'notify_ready', side_effect=lambda: events.append('ready')), \
@@ -129,10 +128,9 @@ class StartupTests(unittest.TestCase):
 
     def test_configured_english_strategy_reaches_warmup_and_router(self):
         selected = []
-        decision = SimpleNamespace(decide=lambda *args, **kw: selected.append(kw['language'].code),
+        decision = SimpleNamespace(decide_request=lambda *args, **kw: selected.append(kw['language'].code),
                                    clarify_text=lambda *a: '',
                                    warmup=lambda language: selected.append(language.code))
-        overview = SimpleNamespace(parse_overview=lambda _: None)
         class Server:
             daemon_threads = False
             def __init__(self, address, handler): pass
@@ -143,7 +141,7 @@ class StartupTests(unittest.TestCase):
             self.assertEqual(kwargs['agent_language'], 'en')
             kwargs['decision_fn']({'messages': []})
             return make(*args, **kwargs)
-        with patch.dict(sys.modules, {'qwen_decision': decision, 'qwen_context_catalog': overview}), \
+        with patch.dict(sys.modules, {'command_router': decision}), \
              patch.dict(gateway.os.environ, {'AGENT_LANGUAGE': 'en', 'ROUTER_VOCABULARY': ''}), \
              patch.object(sys, 'argv', ['gateway', '--decide-apply', '--prompt-counter-url', 'http://127.0.0.1:1/count']), \
              patch.object(gateway, 'ThreadingHTTPServer', Server), \
@@ -306,6 +304,33 @@ class GatewayMetricsTests(unittest.TestCase):
         for policy in ('reuse', 'reset'):
             self.request(cache_policy=policy, prompt_counter=lambda _: 99999)
             self.assertEqual(self.forwarded, [])
+
+    def test_prompt_budget_exact_fit_and_overflow_before_backend(self):
+        body = {'messages': [{'role': 'user', 'content': 'Synthetic request'}],
+                'max_completion_tokens': 32}
+        for policy in ('reuse', 'reset'):
+            with self.subTest(policy=policy):
+                counted = []
+                _, rows = self.request(body=body, cache_policy=policy,
+                    prompt_counter=lambda request: counted.append(request) or (10240 - 32 - 64))
+                self.assertEqual(rows[0]['status'], 200)
+                self.assertEqual(counted, [self.forwarded[-1]])
+                _, rows = self.request(body=body, cache_policy=policy,
+                    prompt_counter=lambda _: 10240 - 32 - 64 + 1)
+                self.assertEqual(rows[0]['status'], 413)
+                self.assertEqual(self.forwarded, [])
+
+    def test_counter_failure_has_static_log_and_never_contacts_backend(self):
+        def failed(_):
+            raise ValueError('Unsupported request shape')
+
+        for policy in ('reuse', 'reset'):
+            with self.subTest(policy=policy), patch('sys.stdout', new=io.StringIO()) as logs:
+                _, rows = self.request(cache_policy=policy, prompt_counter=failed)
+                self.assertEqual(rows[0]['status'], 503)
+                self.assertEqual(rows[0]['outcome'], 'rejected')
+                self.assertEqual(self.forwarded, [])
+                self.assertEqual(logs.getvalue().strip(), 'BUDGET_REJECT: counter failure')
 
     def test_audit_and_capture_observe_normalized_request_without_mutation(self):
         audits, captures = [], []
@@ -531,7 +556,7 @@ class ReportTests(unittest.TestCase):
             root = Path(tmp)
             shutil.copy(GATEWAY.parent/'run.sh', root/'run.sh')
             (root/'gateway').mkdir()
-            for filename in ('qwen_latency_stats.py', 'qwen_metrics.py'):
+            for filename in ('latency_stats.py', 'gateway_metrics.py'):
                 shutil.copy(GATEWAY/filename, root/'gateway'/filename)
             logs = root/'logs/metrics'
             logs.mkdir(parents=True)

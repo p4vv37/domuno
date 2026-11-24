@@ -1,6 +1,8 @@
 """Polish command grammar and optional SGJP inflection strategy."""
 from functools import lru_cache
-from qwen_language import Command, Language
+from pathlib import Path
+
+from ..base import Language
 
 try:
     from polish_inflection import odmien_fraze, odmien_lub_none, odmien_warianty, podaj
@@ -12,41 +14,7 @@ _CASES = ('nom', 'gen', 'dat', 'acc', 'ins', 'loc', 'voc')
 
 class Strategy(Language):
     code = 'pl'
-    area_prepositions = ('w', 'we')
-    reserved = frozenset(('nie', 'prosze', 'w', 'we', 'i', 'oraz', 'potem', 'jesli', 'za', 'na', 'do'))
-    supports_forms = odmien_warianty is not None
-    warmup_word = 'dom'
-    percentage_unit = r'procent(?:ach|ów|y|a)?'
-    position_prepositions = ('na', 'w', 'do')
-    # Scope-changing words are not treated as harmless leading material.
-    # Unknown adverbs/politeness words are accepted up to max_prefix_words.
-    prefix_blockers = frozenset((
-        'nie', 'czy', 'jesli', 'gdy', 'kiedy', 'zanim', 'przed', 'po', 'i',
-        'oraz', 'lub', 'albo', 'ani', 'ale', 'bo', 'ze', 'zeby', 'moze',
-        'ktory', 'ktora', 'ktore', 'gdzie', 'jak', 'co', 'dlaczego'))
-
-    def parse(self, text):
-        tokens = self.normalize(text).split()
-        intent, index, width = self.find_command(tokens)
-        if intent is None:
-            return Command(reason='no-command')
-        if 'nie' in tokens[:index]:
-            return Command(reason='negation')
-        if not self.allows_prefix(tokens[:index]):
-            return Command(reason='outside-grammar')
-        target, position, error = self.split_position(' '.join(text.split()[index+width:]))
-        if error:
-            return Command(intent=intent, target=target, reason=error, position=position)
-        tail = self.normalize(target).split()
-        if (any(word in self.reserved - {'prosze', 'w', 'we'} for word in tail)
-                or any('%' in word or word.startswith('procent') for word in tail)
-                or self.find_command(tail)[0] is not None):
-            return Command(reason='outside-grammar')
-        if intent == 'position' and position is None:
-            return Command(reason='outside-grammar')
-        if intent == 'position' and tail[:1] in (['pozycje'], ['pozycja']):
-            target = ' '.join(target.split()[1:])
-        return Command(intent, target, position=position)
+    vocabulary_path = Path(__file__).with_name('vocabulary.json')
 
     def _head_lemma(self, alias):
         """(lemma, numbers) of the alias head, or None when not safely inflectable."""

@@ -21,8 +21,11 @@ import json
 import math
 import re
 
-from qwen_context_catalog import Status
-from qwen_language import default_language, normalize
+from jsonschema import Draft7Validator, SchemaError
+from rapidfuzz.distance import Levenshtein
+
+from context_catalog import Catalog, parse_overview
+from languages import default_language, normalize
 
 
 _TOOL_NAMES_BY_INTENT = {
@@ -81,29 +84,6 @@ class Decision:
     tool_call: ToolCall | None = None
 
 
-def _within_one(a, b):
-    """True when Levenshtein distance is <= 1."""
-    if a == b:
-        return True
-    if abs(len(a) - len(b)) > 1:
-        return False
-    if len(a) == len(b):
-        return sum(1 for x, y in zip(a, b) if x != y) == 1
-    short, long = (a, b) if len(a) < len(b) else (b, a)
-    i = j = 0
-    skipped = False
-    while i < len(short) and j < len(long):
-        if short[i] == long[j]:
-            i += 1
-            j += 1
-        elif not skipped:
-            skipped = True
-            j += 1
-        else:
-            return False
-    return True
-
-
 def _split_raw(name_scalar):
     """Split comma-joined literal aliases, preserving internal whitespace."""
     return [p for p in _ALIAS_SEP.split(name_scalar.strip()) if p]
@@ -118,24 +98,6 @@ def _name_spellings(scalar):
     literals = _split_raw(scalar)
     parts = [part for name in literals for part in re.split(r'\s{2,}', name)]
     return tuple(dict.fromkeys(literals + parts))
-
-
-def _aliases(names, language, *, name_parts=False):
-    """Split a joined scalar into raw-normalized + lemmatized candidate aliases.
-
-    Keeping both forms lets the <= 1 edit pass recover small STT errors like
-    "urolety"/"relety" against the raw alias "rolety", while the lemmatized form
-    still handles "rolety" -> "roleta".
-    """
-    out = []
-    for x in (_name_spellings(names) if name_parts else _split_raw(names)):
-        raw = normalize(x)
-        if raw:
-            out.append(raw)
-        lem = language.lemma(x)
-        if lem and lem != raw:
-            out.append(lem)
-    return tuple(out)
 
 
 def _canonical(name_scalar):
@@ -170,10 +132,9 @@ def _fill(index, aliases, entity_index, language):
             index.names.setdefault(raw, set()).add(entity_index)
         for form, _number in language.forms(alias):
             index.forms.setdefault(form, set()).add(entity_index)
-        if language.has_lemma:
-            lemma = language.lemma(alias)
-            if lemma:
-                index.lemmas.setdefault(lemma, set()).add(entity_index)
+        lemma = language.lemma(alias)
+        if lemma:
+            index.lemmas.setdefault(lemma, set()).add(entity_index)
 
 
 @lru_cache(maxsize=4)
@@ -192,14 +153,14 @@ def _fuzzy(index, text, lemma):
     for table in (index.names, index.forms):
         found = set()
         for key, value in table.items():
-            if abs(len(key) - len(text)) > 1 or not _within_one(key, text):
+            if Levenshtein.distance(key, text, score_cutoff=1) > 1:
                 continue
             found.update(value)
         if found:
             return found
     if lemma and lemma != text:
         found = {entity for key, value in index.lemmas.items()
-                 if abs(len(key) - len(lemma)) <= 1 and _within_one(key, lemma)
+                 if Levenshtein.distance(key, lemma, score_cutoff=1) <= 1
                  for entity in value}
         if found:
             return found
@@ -249,17 +210,11 @@ def _resolve(index, catalog, text, *, language):
     norm = normalize(text)
     if not norm:
         return []
-    lemma = language.lemma(text) if language.has_lemma else norm
+    lemma = language.lemma(text)
     hit = _index_match(index, norm, lemma)
     if hit is None:
         return []
     return [(i, catalog.entities[i]) for i in sorted(hit)]
-
-
-def _resolve_legacy(catalog, text, *, language):
-    """Pre-index path, kept only so tests can compare both matchers."""
-    return [(i, catalog.entities[i])
-            for i in _match_entities(language.lemma(text), catalog.entities, language)]
 
 
 def _last_tool_content(messages):
@@ -313,51 +268,6 @@ def _ack_response(content, language=None):
     return None
 
 
-def _closest_alias(text, aliases):
-    """A unique similarity match, or None; never used for short phrases."""
-    if len(text) < 5:
-        return None
-    scores = sorted((SequenceMatcher(None, text, alias).ratio()
-                     for alias in aliases), reverse=True)
-    if not scores or scores[0] < .75:
-        return None
-    second = scores[1] if len(scores) > 1 else 0.0
-    return scores[0] if scores[0] - second >= .05 else None
-
-
-def _match_entities(norm_target, entities, language):
-    """Legacy lexical matcher: indices of entities whose aliases match."""
-    exact = [i for i, e in enumerate(entities) if norm_target in _aliases(e.names, language, name_parts=True)]
-    if exact:
-        return exact
-    nearby = [i for i, e in enumerate(entities)
-              if any(_within_one(norm_target, a) for a in _aliases(e.names, language, name_parts=True))]
-    if nearby:
-        return nearby
-    scored = []
-    for i, entity in enumerate(entities):
-        aliases = _aliases(entity.names, language, name_parts=True)
-        best = _closest_alias(norm_target, aliases)
-        if best is not None:
-            scored.append((best, i))
-    if not scored:
-        return []
-    scored.sort(reverse=True)
-    best = scored[0][0]
-    if len(scored) > 1 and best - scored[1][0] < .05:
-        return []
-    return [i for score, i in scored if score == best]
-
-
-def _match_area(norm_area, entity, language):
-    if entity.areas is None:
-        return False
-    aliases = _aliases(entity.areas, language)
-    return (norm_area in aliases
-            or any(_within_one(norm_area, a) for a in aliases)
-            or _closest_alias(norm_area, aliases) is not None)
-
-
 def _action_tool(intent, tools, tool_choice):
     names = _TOOL_NAMES_BY_INTENT[intent]
     if tool_choice not in (None, 'auto', 'required') and not isinstance(tool_choice, dict):
@@ -376,57 +286,41 @@ def _action_tool(intent, tools, tool_choice):
     return None
 
 
-def _schema_accepts(value, schema):
-    """Validate the small inline schema subset used by HA selectors.
+_SCHEMA_TYPES = {'object', 'array', 'string', 'integer', 'number'}
+_SCHEMA_KEYS = {'type', 'enum', 'const', 'properties', 'required', 'items',
+                'additionalProperties', 'description', 'title', 'default',
+                'minimum', 'maximum', 'allOf'}
 
-    Unsupported constraints fail closed: no tool call is proposed. This
-    deliberately avoids implementing general JSON Schema or fetching references.
-    """
-    allowed = {'type', 'enum', 'const', 'properties', 'required', 'items',
-               'additionalProperties', 'description', 'title', 'default', 'minimum', 'maximum',
-               'allOf'}
-    if not isinstance(schema, dict) or schema.keys() - allowed:
+
+def _supported_schema(schema):
+    """Allow only inline HA constraints, including in unused properties."""
+    if not isinstance(schema, dict) or schema.keys() - _SCHEMA_KEYS:
         return False
-    if 'allOf' in schema:
-        branches = schema['allOf']
-        if (not isinstance(branches, list) or not branches
-                or not all(_schema_accepts(value, branch) for branch in branches)):
-            return False
-        # HA combines integer and range constraints this way. Also validate
-        # sibling constraints, rather than accepting solely on the branches.
-        remaining = {key: item for key, item in schema.items()
-                     if key not in ('allOf', 'description', 'title', 'default')}
-        return not remaining or _schema_accepts(value, remaining)
-    types = {'object': dict, 'array': list, 'string': str, 'integer': int, 'number': (int, float)}
     kind = schema.get('type')
-    if not isinstance(kind, str) or kind not in types or not isinstance(value, types[kind]):
-        return False
-    if kind in ('integer', 'number'):
-        if isinstance(value, bool) or not math.isfinite(value):
+    if 'type' in schema or 'allOf' not in schema:
+        if not isinstance(kind, str) or kind not in _SCHEMA_TYPES:
             return False
-    for bound, compare in (('minimum', lambda a, b: a >= b), ('maximum', lambda a, b: a <= b)):
-        if bound in schema:
-            limit = schema[bound]
-            if (kind not in ('integer', 'number') or type(limit) not in (int, float)
-                    or not math.isfinite(limit) or not compare(value, limit)):
+    for key in ('minimum', 'maximum'):
+        if key in schema:
+            limit = schema[key]
+            if type(limit) not in (int, float) or (isinstance(limit, float) and not math.isfinite(limit)):
                 return False
-    if 'enum' in schema:
-        enum = schema['enum']
-        if not isinstance(enum, list) or value not in enum:
-            return False
-    if 'const' in schema and value != schema['const']:
+    properties = schema.get('properties', {})
+    branches = schema.get('allOf', [])
+    return (isinstance(properties, dict) and all(map(_supported_schema, properties.values()))
+            and isinstance(branches, list) and all(map(_supported_schema, branches))
+            and ('items' not in schema or _supported_schema(schema['items']))
+            and isinstance(schema.get('additionalProperties', False), bool))
+
+
+def _schema_accepts(value, schema):
+    if not _supported_schema(schema):
         return False
-    if kind == 'array':
-        return all(_schema_accepts(item, schema.get('items')) for item in value)
-    if kind == 'object':
-        properties = schema.get('properties', {})
-        required = schema.get('required', [])
-        if (not isinstance(properties, dict) or not isinstance(required, list)
-                or not all(isinstance(key, str) and key in value for key in required)):
-            return False
-        return all(key in properties and _schema_accepts(item, properties[key])
-                   for key, item in value.items())
-    return True
+    try:
+        Draft7Validator.check_schema(schema)
+    except SchemaError:
+        return False
+    return Draft7Validator(schema).is_valid(value)
 
 
 def _arguments(function, entity, area, position=None):
@@ -453,13 +347,8 @@ def _arguments(function, entity, area, position=None):
     return arguments
 
 
-def decide(messages, catalog, tools, default_area=None, tool_choice=None, matcher=None, language=None):
-    """Route the current turn only; never replay an action from older history.
-
-    `matcher` selects the resolution strategy: 'forms' uses the catalog form
-    index, 'legacy' keeps the previous lexical matcher for A/B comparison, and
-    None picks 'forms' when the selected strategy provides inflected forms.
-    """
+def decide(messages, catalog: Catalog | None, tools, default_area=None, tool_choice=None, language=None):
+    """Route the current turn only; never replay an action from older history."""
     language = language or default_language()
     if not isinstance(messages, list) or not messages:
         return Decision(kind=DecisionKind.PASS, reason='no-utterance')
@@ -502,16 +391,11 @@ def decide(messages, catalog, tools, default_area=None, tool_choice=None, matche
     tail = command.target.split()
     if tool_choice == 'none':
         return Decision(kind=DecisionKind.PASS, reason='tool-choice-none')
-    if getattr(catalog, 'status', None) != Status.RECOGNIZED:
+    # Only a new device action needs a catalog; tool-result ACKs do not.
+    if catalog is None or not catalog.is_recognized:
         return Decision(kind=DecisionKind.PASS, reason='catalog-unavailable')
-    mode = matcher or ('forms' if language.supports_forms else 'legacy')
-    if mode == 'forms':
-        name_index, area_index = _indexes(catalog, language)
-        resolve = partial(_resolve, name_index, catalog, language=language)
-    elif mode == 'legacy':
-        resolve = partial(_resolve_legacy, catalog, language=language)
-    else:
-        raise ValueError('unknown matcher: %r' % (mode,))
+    name_index, area_index = _indexes(catalog, language)
+    resolve = partial(_resolve, name_index, catalog, language=language)
 
     # Try the complete name first (it may contain "w"). Otherwise separate an
     # explicit area. Never let domain filtering hide a name collision.
@@ -532,18 +416,10 @@ def decide(messages, catalog, tools, default_area=None, tool_choice=None, matche
             return Decision(kind=DecisionKind.PASS, reason='outside-grammar')
         return Decision(kind=DecisionKind.PASS, reason='no-target')
     if area_text:
-        if mode == 'forms':
-            norm_area = normalize(area_text)
-            area_lemma = language.lemma(area_text) if language.has_lemma else norm_area
-            hit = _index_match(area_index, norm_area, area_lemma)
-            allowed = hit or set()
-            targets = [(i, entity) for i, entity in targets if i in allowed]
-        else:
-            norm_area = language.lemma(area_text)
-            exact = [(i, entity) for i, entity in targets
-                     if entity.areas and norm_area in _aliases(entity.areas, language)]
-            targets = exact or [(i, entity) for i, entity in targets
-                                if _match_area(norm_area, entity, language)]
+        norm_area = normalize(area_text)
+        area_lemma = language.lemma(area_text)
+        allowed = _index_match(area_index, norm_area, area_lemma) or set()
+        targets = [(i, entity) for i, entity in targets if i in allowed]
         if not targets:
             return Decision(kind=DecisionKind.PASS, reason='area-mismatch')
     if len(targets) != 1:
@@ -563,12 +439,13 @@ def decide(messages, catalog, tools, default_area=None, tool_choice=None, matche
     # different row. Validate the selectors we will actually send to HA.
     canonical = normalize(_canonical(entity.names) or '')
     # Compare literal aliases only, not shortened search hints or lemmas.
-    collisions = [other for other in catalog.entities
-                  if other.domain == entity.domain
-                  and canonical in _explicit_aliases(other.names)
-                  and (area is None or other.areas
-                       and normalize(area) in _explicit_aliases(other.areas))]
-    if len(collisions) != 1:
+    selector_matches = [
+        other for other in catalog.entities
+        if other.domain == entity.domain
+        and canonical in _explicit_aliases(other.names)
+        and (area is None or normalize(area) in _explicit_aliases(other.areas))
+    ]
+    if len(selector_matches) != 1:
         return Decision(kind=DecisionKind.CLARIFY, reason='ambiguous-target')
     if position_out_of_range:
         return Decision(kind=DecisionKind.CLARIFY, reason='invalid-position')
@@ -582,6 +459,13 @@ def decide(messages, catalog, tools, default_area=None, tool_choice=None, matche
         return Decision(kind=DecisionKind.PASS, reason='unsupported-schema')
     return Decision(kind=DecisionKind.TOOLCALL,
                     tool_call=ToolCall(name=function['name'], arguments=arguments))
+
+
+def decide_request(body, *, language):
+    """Route a normalized HA chat request using its advertised tools and catalog."""
+    messages = body['messages']
+    return decide(messages, parse_overview(messages), body.get('tools'),
+                  tool_choice=body.get('tool_choice'), language=language)
 
 
 def clarify_text(reason, language=None):

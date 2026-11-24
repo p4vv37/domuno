@@ -1,10 +1,4 @@
-"""Form-index router regressions and an A/B table against the legacy matcher.
-
-Synthetic catalogs only: no HA, network or NPU. Run as a script to print the
-old/new comparison on the same sentences:
-
-    python3 tests/test_router_forms.py
-"""
+"""Form-index router regressions with synthetic catalogs."""
 import importlib.util
 from pathlib import Path
 import sys
@@ -12,7 +6,7 @@ import unittest
 
 GATEWAY = Path(__file__).resolve().parents[1] / 'gateway'
 sys.path.insert(0, str(GATEWAY))
-from qwen_language import get_language
+from languages import get_language
 
 
 def load(name, filename):
@@ -23,11 +17,10 @@ def load(name, filename):
     return module
 
 
-catalog_mod = load('qwen_context_catalog', 'qwen_context_catalog.py')
-router = load('forms_decision', 'qwen_decision.py')
+catalog_mod = load('context_catalog', 'context_catalog.py')
+router = load('forms_decision', 'command_router.py')
 
-HAS_INFLECTION = get_language('pl').supports_forms
-HAS_SIMPLEMMA = get_language('pl').has_lemma
+HAS_INFLECTION = bool(get_language('pl').forms('Lampa'))
 
 
 def overview(rows):
@@ -46,9 +39,9 @@ def tools():
             for name in ('intent__HassTurnOn', 'intent__HassTurnOff')]
 
 
-def route(text, rows, matcher=None):
+def route(text, rows):
     return router.decide([{'role': 'user', 'content': text}], overview(rows),
-                         tools(), matcher=matcher)
+                         tools(), language=get_language('pl'))
 
 
 @unittest.skipUnless(HAS_INFLECTION, 'polish-inflection not installed')
@@ -110,30 +103,28 @@ class FormIndexTests(unittest.TestCase):
         self.assertIs(router._indexes(overview(rows), get_language('pl')), router._indexes(overview(rows), get_language('pl')))
 
 
-# (label, text, rows, expected forms result, legacy result under simplemma).
-# None means the legacy outcome depends on simplemma and is only reported.
 CORPUS = [
     ('singular acc + locative', 'Zamknij roletę w sypialni',
-     [('Roleta', 'cover', 'Sypialnia')], 'toolcall', None),
+     [('Roleta', 'cover', 'Sypialnia')], 'toolcall'),
     ('plural of singular alias', 'Zamknij rolety w sypialni',
-     [('Roleta', 'cover', 'Sypialnia')], 'toolcall', None),
+     [('Roleta', 'cover', 'Sypialnia')], 'toolcall'),
     ('explicit plural alias', 'Zamknij rolety w sypialni',
-     [('Roleta, Rolety', 'cover', 'Sypialnia')], 'toolcall', None),
+     [('Roleta, Rolety', 'cover', 'Sypialnia')], 'toolcall'),
     ('multiword agreement', 'Włącz lampę sufitową w kuchni',
-     [('Lampa sufitowa', 'light', 'Kuchnia')], 'toolcall', None),
+     [('Lampa sufitowa', 'light', 'Kuchnia')], 'toolcall'),
     ('exact spelling over similar name', 'Włącz Lampa',
-     [('Lampa', 'light', 'Salon'), ('Lampy', 'light', 'Salon')], 'toolcall', None),
+     [('Lampa', 'light', 'Salon'), ('Lampy', 'light', 'Salon')], 'toolcall'),
     ('same name, two domains', 'Włącz lampę',
      [('Lampa', 'light', 'Salon'), ('Lampa', 'switch', 'Salon')],
-     'clarify:ambiguous-target', 'clarify:ambiguous-target'),
+     'clarify:ambiguous-target'),
     ('unknown target', 'Włącz XYZ',
-     [('Lampa', 'light', 'Salon')], 'pass:no-target', 'pass:no-target'),
+     [('Lampa', 'light', 'Salon')], 'pass:no-target'),
     ('wrong domain', 'Zamknij lampę',
-     [('Lampa', 'light', 'Salon')], 'pass:unsupported-domain', 'pass:unsupported-domain'),
+     [('Lampa', 'light', 'Salon')], 'pass:unsupported-domain'),
     # A whole percentage after the preposition is a valid position command once
     # HassSetPosition is advertised. This catalog only exposes on/off tools.
     ('position tool not advertised', 'Otwórz roletę w sypialni na 30%',
-     [('Roleta', 'cover', 'Sypialnia')], 'clarify:position-unavailable', 'clarify:position-unavailable'),
+     [('Roleta', 'cover', 'Sypialnia')], 'clarify:position-unavailable'),
 ]
 
 
@@ -143,30 +134,13 @@ def outcome(decision):
         router.DecisionKind.CLARIFY, router.DecisionKind.PASS) else '')
 
 
-class ComparisonTests(unittest.TestCase):
+class CorpusTests(unittest.TestCase):
     @unittest.skipUnless(HAS_INFLECTION, 'polish-inflection not installed')
-    def test_forms_mode_matches_the_expected_table(self):
-        for label, text, rows, expected, _legacy in CORPUS:
+    def test_index_matches_the_expected_corpus(self):
+        for label, text, rows, expected in CORPUS:
             with self.subTest(label=label):
-                self.assertEqual(outcome(route(text, rows, 'forms')), expected)
-
-    @unittest.skipUnless(HAS_INFLECTION and HAS_SIMPLEMMA,
-                         'both matchers need simplemma and polish-inflection')
-    def test_legacy_mode_matches_the_expected_table(self):
-        for label, text, rows, _expected, legacy in CORPUS:
-            if legacy is None:
-                continue
-            with self.subTest(label=label):
-                self.assertEqual(outcome(route(text, rows, 'legacy')), legacy)
-
-
-def print_table():
-    print('%-32s %-24s %-24s' % ('sentence', 'forms', 'legacy'))
-    for label, text, rows, _expected, _legacy in CORPUS:
-        forms = outcome(route(text, rows, 'forms'))
-        legacy = outcome(route(text, rows, 'legacy'))
-        print('%-32s %-24s %-24s' % (label, forms, legacy))
+                self.assertEqual(outcome(route(text, rows)), expected)
 
 
 if __name__ == '__main__':
-    print_table()
+    unittest.main()

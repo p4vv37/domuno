@@ -65,7 +65,9 @@ points.
    PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
    ```
 
-   Some tests are skipped without `numpy`, `simplemma`, `num2words` or
+   Install the router's required dependencies (`jsonschema` and `RapidFuzz`)
+   using the versions in the debugging guide below. Some tests are skipped
+   without `numpy`, `simplemma`, `num2words` or
    `polish-inflection`. CI installs them; a local `.venv` is fine too. Use
    `.venv/bin/python` to exercise the installed `simplemma`; number normalization
    tests require `num2words==0.5.14`. To step through the router on a PC, use the
@@ -99,9 +101,9 @@ tests/                  offline unit and integration-style tests
 docs/                   configuration, operations, router, debugging, performance
 ```
 
-Start reading at `gateway/qwen_npu_gateway.py`, then
-`gateway/qwen_context_catalog.py` (HA overview parsing) and
-`gateway/qwen_decision.py` (routing and tool validation). For audio, start with
+Start reading at `gateway/chat_gateway.py`, then
+`gateway/context_catalog.py` (HA overview parsing) and
+`gateway/command_router.py` (routing and tool validation). For audio, start with
 the Wyoming handlers, then `stt/qnn_whisper_engine.py` or
 `tts-pocket-wyoming/rust_tts_backend.py`.
 

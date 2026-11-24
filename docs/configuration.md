@@ -46,7 +46,11 @@ conservative token upper bound. It is not an LLM and does not use the NPU.
 
 - Local: `GGUF` + `TOKENIZER` make `setup.sh` create
   `qwen-ha-counter.service` on `127.0.0.1:18193`. It installs the pinned
-  `transformers` package.
+  `transformers` package. Set `TOKENIZER` in `.env` to the absolute path of a
+  local directory containing `tokenizer.json` for the selected GGUF. When
+  `TOKENIZER` is empty, `./run.sh` uses `assets/qwen-tokenizer` and `prepare`
+  downloads the bundled recipe's tokenizer there. With an explicit path,
+  `prepare` checks for `tokenizer.json` without downloading into that directory.
 - External: set `COUNTER_URL` to an existing loopback counter. This is mutually
   exclusive with local `GGUF` + `TOKENIZER`.
 - Neither: `setup.sh` fails, and the gateway CLI refuses to start.
@@ -58,9 +62,13 @@ prompt_upper_bound + max_completion_tokens + 64 > NCTX  → HTTP 413
 counter unavailable                                      → HTTP 503
 ```
 
-Both fail before the backend is contacted. The estimate includes a 1024-token
-reserve plus per-message and per-tool reserves; it is not a certified native
-tokenizer parity.
+Both fail before the backend is contacted. Keep this check with GenieX 0.11.0:
+with `NCTX=10240`, a synthetic HA tool-result prompt over the context limit
+aborted the backend (`SIGABRT`) instead of returning an HTTP error. A subsequent
+short request could not connect.
+
+The estimate includes a 1024-token reserve plus per-message and per-tool
+reserves; it is not a certified match for native token counting.
 
 The router is optional and fail-open. `DECIDE_APPLY=1` only changes commands it
 can resolve to exactly one entity and one supported tool; all other requests
@@ -153,7 +161,7 @@ three-file rotation and a 5 MiB limit per file. They are ignored by git.
 | --- | --- | --- |
 | `ROUTER_MISS_LOGGING` | `0` | `1` records the latest user utterance (up to 512 chars), routing reason and metadata for requests the router passes toward the LLM, before the budget gate. Never publish it. |
 | `ROUTER_MISS_UNTIL` | empty | Optional fixed ISO 8601 cutoff with timezone, e.g. `2026-11-24T00:00:00Z`; empty collects until disabled |
-| `ROUTER_VOCABULARY` | empty | Absolute path to a complete replacement for `router_pl.json` / `router_en.json` |
+| `ROUTER_VOCABULARY` | empty | Absolute path to a complete replacement for the selected language's bundled vocabulary |
 | `CONTEXT_AUDIT` | `1` | Metadata and SHA-256 fingerprints of the normalized request, without names or prompts |
 | `CONTEXT_CAPTURE` | `0` | Full normalized requests, including private home data; explicit opt-in |
 | `CONTEXT_CAPTURE_LIMIT` | `5` | `1`–`20` incoming requests per gateway process |
@@ -172,7 +180,11 @@ explicit directory argument must not silently enable transcript capture.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `QWEN_GATEWAY_API_KEY` | empty | Optional bearer token; set the same value in the HA integration |
+| `GATEWAY_API_KEY` | empty | Optional bearer token; set the same value in the HA integration |
+
+Existing deployments may still use `QWEN_GATEWAY_API_KEY`. The gateway uses it
+when `GATEWAY_API_KEY` is unset or empty. To migrate, rename the variable in
+`.env` without changing its value, then restart the gateway.
 
 The gateway listens on the LAN and is unauthenticated by default. This matches
 the trusted-LAN deployment. Never expose port `18191` to the public Internet.
@@ -204,7 +216,12 @@ needs and should be preferred.
 | `COUNTER_PORT` | `18193` | Local prompt counter port |
 | `COUNTER_URL` | derived | External loopback counter URL; required when not using local `GGUF` + `TOKENIZER` |
 | `TOKENIZER` | empty | Local Qwen tokenizer directory for the counter, normally `assets/qwen-tokenizer` |
-| `FULL_STACK` | `0` | `1` installs/starts Qwen and Whisper units; `0` is a gateway-only update |
+| `FULL_STACK` | `0` | `1` installs/starts the LLM backend and selected STT unit; `0` updates only the gateway and its local counter, if configured |
+
+Changing `MODEL` alone does not switch models. `./run.sh prepare` downloads the
+shipped Qwen recipe. A different model needs a compatible backend and a prompt
+counter using the same model's GGUF metadata, tokenizer and chat template.
+Update the model ID in Home Assistant as well.
 
 ## Applying changes
 

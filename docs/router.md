@@ -47,8 +47,8 @@ a scope-changing word — negation, a question, a condition, a conjunction or
 `może` — so the complete utterance can reach the model. The same rule applies to
 English. This is a small grammar guard, not a filler dictionary.
 
-Polish and English command words come from `gateway/router_pl.json` and
-`gateway/router_en.json`. The JSON contains only command synonyms and spoken
+Polish and English command words come from [the Polish vocabulary](../gateway/languages/pl/vocabulary.json)
+and [the English vocabulary](../gateway/languages/en/vocabulary.json). The JSON contains only command synonyms and spoken
 replies. Tool mappings, supported domains, grammar and selector checks stay in
 code.
 
@@ -59,25 +59,41 @@ language detection, translation or plugin discovery.
 
 | Module | Responsibility |
 | --- | --- |
-| `qwen_language.py` | Shared interface, vocabulary validation, `simplemma` lemmatization, two-language factory, number words |
-| `qwen_language_pl.py` | Polish grammar, `w`/`we` area prepositions, optional SGJP inflection through `polish-inflection` |
-| `qwen_language_en.py` | English grammar, `in`/`at`, `turn on`, `switch off`, article `the` |
-| `qwen_decision.py` | Language-independent target resolution, ambiguity checks and tool validation |
+| `languages/__init__.py` | Shared registry, lazy loading of the selected strategy |
+| `languages/base.py` | `Language` interface, reusable single-action parser, vocabulary validation, lemmatization and number words |
+| `languages/pl/` | Polish rules and vocabulary, `w`/`we` area prepositions, optional SGJP inflection |
+| `languages/en/` | English rules and vocabulary, `in`/`at`, phrasal verbs and the article `the` |
+| `command_router.py` | Language-independent target resolution, ambiguity checks and tool validation |
 
 Only the selected language's dictionaries are warmed. English does not import the
 Polish strategy or require `polish-inflection`. The installer always installs
 `simplemma` and `num2words`; the optional Polish packages are installed only for
-`pl`. Without a dictionary, lexical matching remains available. Catalog indexes
-are cached per language strategy, so Polish and English analyses cannot share the
-wrong index.
+`pl`. Both languages use the same indexed matcher. It searches explicit names
+and aliases, generated forms (if available), lemmas (if available), then
+approximate matches. Without dictionaries, the same matcher works from literal
+spellings. Catalog indexes are cached per language strategy.
 
 A router-language change needs only a gateway restart. If the English dependency
 was never installed, run the gateway-only installer. Match the HA Assist pipeline
 language separately.
 
+## Grammar rules
+
+Each strategy ships a `grammar.json` beside its vocabulary. The shared parser
+uses `prefix_blockers` before the command and `tail_blockers` after it, once a
+valid position suffix has been removed. `negations` identify an explicit refusal
+before the command. `reserved_synonym_words` only validates vocabulary entries;
+it is not a list of words to reject in the utterance. For example, Polish `w`
+cannot be a command synonym but can introduce an area in the target.
+
+The grammar also defines area and position prepositions and how to recognize
+percentage expressions. Keep rules here when only the words differ. Use a
+strategy's Python implementation when the parsing algorithm or morphology differs.
+`ROUTER_VOCABULARY` replaces synonyms and replies only; it does not override grammar.
+
 ## Vocabulary
 
-`router_pl.json` and `router_en.json` are plain JSON. An abbreviated example:
+Each strategy's `vocabulary.json` is plain JSON. An abbreviated example:
 
 ```json
 {
@@ -150,8 +166,9 @@ weak match or ambiguity stays unresolved and goes to clarification or the LLM.
 - **Inflection:** Polish `polish-inflection` (SGJP) provides generated forms;
   `simplemma` provides lemmas. A generated plural may select one device after
   area filtering; multiple matches stay ambiguous.
-- **STT recovery:** one edit (Levenshtein distance ≤ 1) recovers small errors such
-  as `relety` / `rolety` when the result is unique.
+- **STT recovery:** RapidFuzz computes Levenshtein distance ≤ 1 to recover small
+  errors such as `relety` / `rolety` when the result is unique. The separate
+  similarity fallback keeps its original scorer and thresholds.
 - **Areas:** only whole aliases match. Area selectors always come from the HA
   context. For short room names, configure explicit aliases in HA.
 - **Collisions:** after a unique alias match, the router also checks the primary
@@ -194,8 +211,9 @@ its schema is unsupported, the request still passes to the LLM.
 Only `intent__HassSetPosition` or `HassSetPosition` is used, and only if its
 current schema accepts the canonical name, domain, optional area and numeric
 `position`, including type, enum, minimum/maximum and supported `allOf`
-constraints. If the tool is missing or the schema is unsupported, the complete
-request passes to the LLM.
+constraints. `jsonschema` validates the arguments against the advertised inline
+schema; the router still rejects unsupported keywords and references. If the
+schema is unsupported, the complete request passes to the LLM.
 
 Digits work without a number library. Spelled numbers use a bounded lookup of
 0–100 generated by `num2words`, not a handwritten list. Unknown wording,

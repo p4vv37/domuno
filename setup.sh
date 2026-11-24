@@ -36,11 +36,12 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || fail 'Python 3.
 [[ $CACHE_POLICY == reuse || $CACHE_POLICY == reset ]] || fail 'CACHE_POLICY must be reuse or reset.'
 [[ $RESPONSE_STYLE == concise || $RESPONSE_STYLE == original ]] || fail 'RESPONSE_STYLE must be concise or original.'
 [[ $ROUTER_MISS_LOGGING == 0 || $ROUTER_MISS_LOGGING == 1 ]] || fail 'ROUTER_MISS_LOGGING must be 0 or 1.'
-[[ $AGENT_LANGUAGE == pl || $AGENT_LANGUAGE == en ]] || fail 'AGENT_LANGUAGE must be pl or en.'
+(cd "$DEPLOY_DIR/gateway" && python3 -B -m languages -- "$AGENT_LANGUAGE")
+
 [[ $STT_PROVIDER == whisper-qnn || $STT_PROVIDER == external ]] || fail 'STT_PROVIDER must be whisper-qnn or external.'
 [[ $TTS_PROVIDER == pocket-pl || $TTS_PROVIDER == external ]] || fail 'TTS_PROVIDER must be pocket-pl or external.'
 if [[ $FULL_STACK == 1 && $AGENT_LANGUAGE != pl ]]; then
-    [[ $STT_PROVIDER == external && $TTS_PROVIDER == external ]] || fail 'English full-stack setup requires external STT and TTS configured in Home Assistant.'
+    [[ $STT_PROVIDER == external && $TTS_PROVIDER == external ]] || fail 'Local speech recipes require Polish; select external STT and TTS for other languages.'
 fi
 for port in "$GATEWAY_PORT" "$COUNTER_PORT"; do
     [[ $port =~ ^[0-9]+$ ]] && (( port > 0 && port < 65536 )) || fail 'Invalid port.'
@@ -71,7 +72,8 @@ fi
 
 cd "$DEPLOY_DIR"
 [[ -x .venv/bin/python ]] || uv venv --python python3 .venv
-uv pip install --python "$DEPLOY_DIR/.venv/bin/python" simplemma==2.0.0 num2words==0.5.14
+uv pip install --python "$DEPLOY_DIR/.venv/bin/python" \
+    simplemma==2.0.0 num2words==0.5.14 jsonschema==4.25.1 RapidFuzz==3.14.1
 if [[ ${LLM_WAIT_SOUND:-0} == 1 && ${LLM_WAIT_SOUND_VOLUME:-lva} == lva ]]; then
     uv pip install --python "$DEPLOY_DIR/.venv/bin/python" websockets==15.0.1
 fi
@@ -95,7 +97,7 @@ Description=Qwen HA offline prompt counter (CPU)
 [Service]
 Type=exec
 WorkingDirectory=$DEPLOY_DIR
-ExecStart="$DEPLOY_DIR/.venv/bin/python" -u "$DEPLOY_DIR/gateway/qwen_dynamic_budget_server.py" --port $COUNTER_PORT --gguf "$GGUF" --tokenizer "$TOKENIZER"
+ExecStart="$DEPLOY_DIR/.venv/bin/python" -u "$DEPLOY_DIR/gateway/prompt_counter.py" --port $COUNTER_PORT --gguf "$GGUF" --tokenizer "$TOKENIZER"
 Restart=on-failure
 RestartSec=3
 UMask=0077
@@ -105,7 +107,7 @@ WantedBy=default.target
 EOF
 fi
 
-EXEC="\"$DEPLOY_DIR/.venv/bin/python\" -u \"$DEPLOY_DIR/gateway/qwen_npu_gateway.py\""
+EXEC="\"$DEPLOY_DIR/.venv/bin/python\" -u \"$DEPLOY_DIR/gateway/chat_gateway.py\""
 EXEC+=" --host \"$GATEWAY_HOST\" --port $GATEWAY_PORT --upstream \"$BACKEND_URL\""
 EXEC+=" --model \"$MODEL\" --nctx $NCTX"
 EXEC+=" --cache-policy $CACHE_POLICY --response-style $RESPONSE_STYLE"

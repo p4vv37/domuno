@@ -141,7 +141,7 @@ def from_environment():
         except ImportError:
             print('WARNING: LVA volume sync unavailable; run ./run.sh prepare-audio', file=sys.stderr)
             return None
-        from qwen_lva_volume import LvaVolume
+        from lva_volume import LvaVolume
         source = LvaVolume(os.environ.get('LVA_VOLUME_URL', 'ws://127.0.0.1:6055'), connect)
         # One bounded startup wait; play() never performs network I/O or waits.
         source.ready.wait(timeout=1)

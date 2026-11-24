@@ -13,12 +13,13 @@ to see which component handles each turn:
     python tools/simulate_ha_loop.py --list
     python tools/simulate_ha_loop.py router-toolcall --step
 
-Set breakpoints in gateway/qwen_npu_gateway.py, gateway/qwen_decision.py and
+Set breakpoints in gateway/chat_gateway.py, gateway/command_router.py and
 this file, then use the ``HA loop: full simulated pipeline`` launch config.
 """
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -29,10 +30,10 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'gateway'))
 
-from qwen_context_catalog import HEADING, parse_overview  # noqa: E402
-from qwen_decision import clarify_text, decide  # noqa: E402
-from qwen_language import get_language  # noqa: E402
-from qwen_npu_gateway import MODEL, make_handler  # noqa: E402
+from context_catalog import HEADING  # noqa: E402
+from command_router import clarify_text, decide_request  # noqa: E402
+from languages import get_language  # noqa: E402
+from chat_gateway import MODEL, make_handler  # noqa: E402
 
 
 HEADING_TEXT = HEADING + '\n'
@@ -174,14 +175,10 @@ class FakeUpstream:
 class Gateway:
     def __init__(self, upstream_url):
         language = get_language('pl')
-        def decider(body):
-            catalog = parse_overview(body['messages'])
-            return decide(body['messages'], catalog, body.get('tools'), language=language)
-
         handler = make_handler(
             upstream_url, model=MODEL, nctx=10240, prompt_counter=lambda _body: 1000,
-            decision_fn=decider, decide_apply=True,
-            clarify_text=lambda reason: clarify_text(reason, language),
+            decision_fn=partial(decide_request, language=language), decide_apply=True,
+            clarify_text=partial(clarify_text, language=language),
             agent_language='pl', response_style='concise', backend_version='simulation')
         handler.log_message = lambda *_args: None
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
@@ -347,8 +344,8 @@ def run(name, *, step):
         before = upstream.calls
         turn = parse_sse(post(gateway.port, request_body(messages)))
         route = 'llm' if upstream.calls > before else 'router'
-        where = ('gateway/qwen_decision.py' if route == 'router'
-                 else 'gateway/qwen_npu_gateway.py -> fake GenieX')
+        where = ('gateway/command_router.py' if route == 'router'
+                 else 'gateway/chat_gateway.py -> fake GenieX')
         walk.stage('gateway: first request -> %s' % route,
                    'component: %s\ncontent: %s\ntool calls: %s' % (
                        where,
@@ -372,8 +369,8 @@ def run(name, *, step):
         before = upstream.calls
         turn = parse_sse(post(gateway.port, request_body(messages)))
         route = 'llm' if upstream.calls > before else 'router'
-        where = ('gateway/qwen_decision.py' if route == 'router'
-                 else 'gateway/qwen_npu_gateway.py -> fake GenieX')
+        where = ('gateway/command_router.py' if route == 'router'
+                 else 'gateway/chat_gateway.py -> fake GenieX')
         walk.stage('gateway: tool-result request -> %s' % route,
                    'component: %s\ncontent: %s\ntool calls: %s' % (
                        where,

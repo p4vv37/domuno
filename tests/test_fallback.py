@@ -34,7 +34,7 @@ class FallbackTests(unittest.TestCase):
                          router.DecisionKind.CLARIFY)):
                     with self.subTest(code=code, rows=rows):
                         decision = router.decide([{'role': 'user', 'content': f'{verb} awnings'}],
-                            overview(rows), tools(), matcher='forms', language=language)
+                            overview(rows), tools(), language=language)
                         self.assertEqual(decision.kind, expected)
                         if expected == router.DecisionKind.TOOLCALL:
                             self.assertEqual(decision.tool_call.arguments['name'], 'Awning')
@@ -44,7 +44,7 @@ class FallbackTests(unittest.TestCase):
                 scoped = router.decide([{'role': 'user',
                     'content': f'{verb} awnings {preposition} Zone B'}],
                     overview([('Awning', 'cover', 'Zone A'), ('Awning', 'cover', 'Zone B')]),
-                    tools(), matcher='forms', language=language)
+                    tools(), language=language)
                 self.assertEqual(scoped.kind, router.DecisionKind.TOOLCALL)
                 self.assertEqual(scoped.tool_call.arguments['area'], 'Zone B')
 

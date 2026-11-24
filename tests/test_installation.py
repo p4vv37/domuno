@@ -80,6 +80,7 @@ class InstallerTests(unittest.TestCase):
         self.deploy=self.root/'path with spaces'
         self.deploy.mkdir()
         shutil.copy(ROOT/'setup.sh', self.deploy/'setup.sh')
+        shutil.copytree(ROOT/'gateway/languages', self.deploy/'gateway/languages')
         (self.deploy/'llm').mkdir()
         shutil.copy(ROOT/'llm/backend.py', self.deploy/'llm/backend.py')
         fake=self.root/'bin'
@@ -323,6 +324,26 @@ if sys.argv[1] == 'venv':
         self.assertNotEqual(broken.returncode, 0)
         self.assertIn('WorkingDirectory= path is not absolute', broken.stderr)
 
+    def test_prepare_does_not_populate_an_explicit_tokenizer_directory(self):
+        shutil.copy(ROOT/'run.sh', self.deploy/'run.sh')
+        fake = self.root/'bin'
+        for name, script in {'uname': 'echo aarch64', 'geniex': 'exit 0', 'curl': 'exit 99'}.items():
+            command = fake/name
+            command.write_text('#!/bin/sh\n'+script+'\n')
+            command.chmod(0o755)
+        tokenizer = self.root/'custom tokenizer'
+        tokenizer.mkdir()
+        (self.deploy/'.env').write_text(f'TOKENIZER="{tokenizer}"\nSTT_PROVIDER=external\nTTS_PROVIDER=external\n')
+        env = {**self.env, 'GENIEX_BIN': str(fake/'geniex')}
+        command = ['bash', str(self.deploy/'run.sh'), 'prepare']
+        missing = subprocess.run(command, env=env, capture_output=True, text=True)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn('configured TOKENIZER directory', missing.stderr)
+        (tokenizer/'tokenizer.json').write_text('{}')
+        configured = subprocess.run(command, env=env, capture_output=True, text=True)
+        self.assertEqual(configured.returncode, 0, configured.stderr)
+        self.assertEqual(list(tokenizer.iterdir()), [tokenizer/'tokenizer.json'])
+
     def test_public_start_refuses_missing_requirements_before_install_or_build(self):
         shutil.copy(ROOT/'run.sh',self.deploy/'run.sh')
         (self.deploy/'.env').write_text('GGUF=""\nQNN_LIB_DIR=""\n')
@@ -355,14 +376,19 @@ class PackagingTests(unittest.TestCase):
             assets.local_config('weights_path: https://invalid.example/other-file\n')
 
     def test_local_python_imports_are_shipped(self):
-        # Catches the missing qnn_stt_diagnostics import in the copied STT server.
+        # Check sibling imports that must ship with each entry point.
+        gateway_modules = {
+            'chat_gateway', 'command_router', 'context_catalog', 'gateway_metrics',
+            'latency_stats', 'lva_volume', 'prompt_counter', 'languages', 'wait_sound',
+        }
         for path in ROOT.rglob('*.py'):
             if any(part in ('.venv','assets','runtime','tests','tools') for part in path.relative_to(ROOT).parts): continue
             for node in ast.walk(ast.parse(path.read_text())):
                 if not isinstance(node,ast.ImportFrom) or not node.module: continue
                 module=node.module.split('.')[-1]
-                if module.startswith(('qnn_','qwen_')) or module in ('tts_render_worker','rust_tts_backend'):
-                    self.assertTrue((path.parent/(module+'.py')).is_file(),(path.name,module))
+                if module.startswith('qnn_') or module in gateway_modules | {'tts_render_worker', 'rust_tts_backend'}:
+                    self.assertTrue((path.parent/(module+'.py')).is_file()
+                                    or (path.parent/module/'__init__.py').is_file(), (path.name, module))
 
     def test_env_template_is_public_but_runtime_secrets_stay_ignored(self):
         if not shutil.which('git'): self.skipTest('git unavailable')

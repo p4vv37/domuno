@@ -100,7 +100,7 @@ Summarize locally:
 
 ```bash
 ./run.sh stats
-python3 gateway/qwen_latency_stats.py --json logs/metrics/metrics.jsonl*
+python3 gateway/latency_stats.py --json logs/metrics/metrics.jsonl*
 ```
 
 The report groups runs by route, backend version label, profile, cache policy and
@@ -128,7 +128,7 @@ STT and TTS emit their own payload-free lifecycle records through Docker logs:
 ```bash
 docker logs whisper-turbo-qnn > /tmp/stt.log 2>&1
 docker logs tts-pocket-pl > /tmp/tts.log 2>&1
-python3 gateway/qwen_latency_stats.py /tmp/stt.log /tmp/tts.log
+python3 gateway/latency_stats.py /tmp/stt.log /tmp/tts.log
 ```
 
 Audio records have service-local request ids and are not correlated with gateway
@@ -214,8 +214,12 @@ transcripts.
 
 ### Gateway-only
 
-Preserve `.env`, secrets and asset paths. Copy the complete repository, including
-new `gateway/` modules, then run:
+Preserve `.env`, secrets and asset paths. Copy the complete repository. If your
+existing gateway unit points to the old Python entry point, regenerate the unit
+before restarting it. The systemd unit names have not changed.
+
+For a counter managed separately from this checkout, use your existing endpoint
+(the command below shows the default port):
 
 ```bash
 set -a
@@ -225,10 +229,13 @@ FULL_STACK=0 NCTX=10240 GGUF= TOKENIZER= \
   COUNTER_URL=http://127.0.0.1:18193/count ./setup.sh
 ```
 
-This installs the gateway's Python dependencies, regenerates
-`qwen-ha-gateway.service` and restarts only that service. It does not restart Qwen,
-Whisper, TTS or LVA. Wait for router warmup, then check `/healthz` and the metrics
-before enabling HA traffic.
+If this checkout manages the counter, use `FULL_STACK=0 COUNTER_URL= ./setup.sh`
+after sourcing `.env` with the existing `GGUF` and `TOKENIZER` paths. This also
+regenerates and restarts the counter unit so it uses `gateway/prompt_counter.py`.
+
+Both commands regenerate and restart `qwen-ha-gateway.service` without restarting
+the LLM backend, Whisper, TTS or LVA. Wait for router warmup, then check `/healthz`
+and the metrics before enabling HA traffic.
 
 Existing systemd drop-ins take precedence over generated units. Archive a
 temporary GenieX upgrade override (for example `90-geniex-v0.11.0.conf`) before a

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Run qwen_decision.decide against synthetic Home Assistant data.
+"""Run command_router.decide against synthetic Home Assistant data.
 
 No board, Docker, model or network is used. Choose a scenario with:
 
     python tools/debug_router.py --list
     python tools/debug_router.py toolcall
 
-Set a breakpoint in gateway/qwen_decision.py and start the scenario from the
+Set a breakpoint in gateway/command_router.py and start the scenario from the
 VS Code Run and Debug panel.
 """
 from __future__ import annotations
@@ -19,9 +19,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'gateway'))
 
-from qwen_context_catalog import HEADING, parse_overview  # noqa: E402
-from qwen_decision import decide  # noqa: E402
-from qwen_language import get_language  # noqa: E402
+from context_catalog import HEADING, parse_overview  # noqa: E402
+from command_router import decide  # noqa: E402
+from languages import get_language  # noqa: E402
 
 
 def make_catalog(rows):

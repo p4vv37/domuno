@@ -10,8 +10,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from test_gateway import GATEWAY
-from qwen_lva_volume import LvaVolume
-import qwen_wait_sound as sound
+from lva_volume import LvaVolume
+import wait_sound as sound
 from test_wait_sound import FakePlayer
 
 
@@ -146,7 +146,7 @@ class VolumeTests(unittest.TestCase):
                'LLM_WAIT_SOUND_FILE': '', 'LVA_VOLUME_URL': 'ws://127.0.0.1:6060'}
         with patch.dict(sound.os.environ, env), \
                 patch.dict(sys.modules, {'websockets.sync.client': SimpleNamespace(connect=connect)}), \
-                patch('qwen_lva_volume.LvaVolume', return_value=source) as factory, \
+                patch('lva_volume.LvaVolume', return_value=source) as factory, \
                 patch.object(sound.shutil, 'which', return_value='/fake/paplay'):
             adapter = sound.from_environment()
         try:

@@ -108,7 +108,7 @@ needs enough text for a complete sentence.
 Export an Assist pipeline trace and summarize it without exposing the transcript:
 
 ```bash
-python3 gateway/qwen_latency_stats.py --pipeline /tmp/assist-trace.json
+python3 gateway/latency_stats.py --pipeline /tmp/assist-trace.json
 ```
 
 `tts_url_ready_ms` measures URL availability only. `vad_end_to_run_end_ms` is not
@@ -118,7 +118,7 @@ If you observe first PCM and satellite playback for the same run, with
 synchronized clocks, pass explicit timezone-aware timestamps:
 
 ```bash
-python3 gateway/qwen_latency_stats.py --pipeline /tmp/assist-trace.json \
+python3 gateway/latency_stats.py --pipeline /tmp/assist-trace.json \
   --first-pcm-at '2026-11-17T12:00:06Z' \
   --playback-at '2026-11-17T12:00:07Z'
 ```
@@ -147,7 +147,7 @@ Then:
 
 ```bash
 ./run.sh stats
-python3 gateway/qwen_latency_stats.py --json logs/metrics/metrics.jsonl*
+python3 gateway/latency_stats.py --json logs/metrics/metrics.jsonl*
 ```
 
 Keep the profile label honest when the model, context, tools or workload changes.

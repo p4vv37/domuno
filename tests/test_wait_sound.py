@@ -15,7 +15,7 @@ import wave
 
 from test_gateway import GATEWAY
 import test_metrics as metrics_tests
-import qwen_wait_sound as sound
+import wait_sound as sound
 
 
 class FakePlayer:
@@ -78,6 +78,8 @@ class SoundTests(unittest.TestCase):
                         '    assert sys.argv[-1] == "websockets==15.0.1"\n')
                     uv.chmod(0o755)
                 if mode == 'fresh-prepare':
+                    shutil.copytree(GATEWAY / 'languages', root / 'gateway/languages')
+                    (binaries / 'python3').symlink_to(sys.executable)
                     for name, body in (('uname', 'echo aarch64'), ('geniex', 'exit 0')):
                         executable = binaries / name
                         executable.write_text('#!/bin/sh\n' + body + '\n')
@@ -183,7 +185,7 @@ class SoundTests(unittest.TestCase):
             root = Path(directory)
             (root / 'gateway').mkdir()
             (root / 'run.sh').write_bytes((GATEWAY.parent / 'run.sh').read_bytes())
-            (root / 'gateway/qwen_wait_sound.py').write_bytes((GATEWAY / 'qwen_wait_sound.py').read_bytes())
+            (root / 'gateway/wait_sound.py').write_bytes((GATEWAY / 'wait_sound.py').read_bytes())
             (root / '.env').write_text('LLM_WAIT_SOUND=1\nLLM_WAIT_SOUND_VOLUME=10\n')
             player = root / 'paplay'
             trace = root / 'player.json'

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 GATEWAY = Path(__file__).resolve().parents[1] / 'gateway'
 sys.path.insert(0, str(GATEWAY))
-from qwen_language import get_language
+from languages import get_language
 
 
 def load(name, filename):
@@ -26,16 +26,16 @@ def load(name, filename):
 
 
 # Isolate this publication copy from the older experimental scripts in tests/.
-previous = sys.modules.get('qwen_context_catalog')
-catalog = load('qwen_context_catalog', 'qwen_context_catalog.py')
-router = load('publication_decision', 'qwen_decision.py')
+previous = sys.modules.get('context_catalog')
+catalog = load('context_catalog', 'context_catalog.py')
+router = load('publication_decision', 'command_router.py')
 if previous is not None:
-    sys.modules['qwen_context_catalog'] = previous
+    sys.modules['context_catalog'] = previous
 else:
-    del sys.modules['qwen_context_catalog']
-load('qwen_metrics', 'qwen_metrics.py')
-gateway = load('publication_gateway', 'qwen_npu_gateway.py')
-counter = load('publication_counter', 'qwen_dynamic_budget_server.py')
+    del sys.modules['context_catalog']
+load('gateway_metrics', 'gateway_metrics.py')
+gateway = load('publication_gateway', 'chat_gateway.py')
+counter = load('publication_counter', 'prompt_counter.py')
 
 
 def tools():
@@ -61,19 +61,19 @@ def result(text, rows=None, **kwargs):
 
 class PublicationRouterTests(unittest.TestCase):
     def test_vocabulary_environment_selects_external_file_and_missing_file_blocks_start(self):
-        vocabulary = json.loads((GATEWAY/'router_pl.json').read_text())
+        vocabulary = json.loads((GATEWAY/'languages/pl/vocabulary.json').read_text())
         vocabulary['responses']['clarifications']['negation'] = 'Synthetic response'
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'custom vocabulary.json'
             path.write_text(json.dumps(vocabulary))
             env = {**os.environ, 'ROUTER_VOCABULARY': str(path)}
             selected = subprocess.run([sys.executable, '-c',
-                'from qwen_decision import clarify_text; print(clarify_text("negation"))'],
+                'from command_router import clarify_text; print(clarify_text("negation"))'],
                 cwd=GATEWAY, env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(selected.returncode, 0, selected.stderr)
             self.assertEqual(selected.stdout.strip(), 'Synthetic response')
             path.unlink()
-            blocked = subprocess.run([sys.executable, 'qwen_npu_gateway.py', '--decide-apply', '--port', '0',
+            blocked = subprocess.run([sys.executable, 'chat_gateway.py', '--decide-apply', '--port', '0',
                  '--prompt-counter-url', 'http://127.0.0.1:1/count'],
                 cwd=GATEWAY, env=env, capture_output=True, text=True, timeout=10)
             self.assertNotEqual(blocked.returncode, 0)
@@ -81,7 +81,7 @@ class PublicationRouterTests(unittest.TestCase):
             self.assertIn('FileNotFoundError', blocked.stderr)
 
     def test_vocabulary_changes_verbs_and_replies_without_changing_target_checks(self):
-        vocabulary = json.loads((GATEWAY/'router_pl.json').read_text())
+        vocabulary = json.loads((GATEWAY/'languages/pl/vocabulary.json').read_text())
         vocabulary['commands']['on'].append('odpal')
         vocabulary['responses']['success'] = 'Gotowe'
         vocabulary['responses']['clarifications']['ambiguous-target'] = 'Które urządzenie?'
@@ -97,7 +97,7 @@ class PublicationRouterTests(unittest.TestCase):
                 self.assertEqual(router.clarify_text('ambiguous-target'), 'Które urządzenie?')
 
     def test_vocabulary_rejects_conflicting_commands_and_incomplete_responses(self):
-        original = json.loads((GATEWAY/'router_pl.json').read_text())
+        original = json.loads((GATEWAY/'languages/pl/vocabulary.json').read_text())
         variants = []
         duplicate = copy.deepcopy(original)
         duplicate['commands']['off'].append('WŁĄCZ')
@@ -249,43 +249,54 @@ class PublicationRouterTests(unittest.TestCase):
         self.assertIsNone(decision.tool_call)
 
     def test_numeric_names_and_context_only_area_names_remain_supported(self):
-        for matcher in ('legacy', 'forms'):
-            for area in ('Atrium północne', 'Pokój 50', 'Strefa X-12'):
-                with self.subTest(matcher=matcher, area=area):
-                    rows = [('Markiza 2', 'cover', area)]
-                    decision = result('Otwórz Markiza 2 w '+area, rows, matcher=matcher)
-                    self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
-                    self.assertEqual(decision.tool_call.arguments['area'], area)
-                    self.assertEqual(decision.tool_call.arguments['name'], 'Markiza 2')
+        for area in ('Atrium północne', 'Pokój 50', 'Strefa X-12'):
+            with self.subTest(area=area):
+                rows = [('Markiza 2', 'cover', area)]
+                decision = result('Otwórz Markiza 2 w '+area, rows)
+                self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
+                self.assertEqual(decision.tool_call.arguments['area'], area)
+                self.assertEqual(decision.tool_call.arguments['name'], 'Markiza 2')
 
     def test_repeated_spaces_in_friendly_name_are_preserved_in_ha_selector(self):
-        for matcher in ('legacy', 'forms'):
-            for name in ('zasłony  Zasłona', 'żaluzje  Sterownik'):
-                rows = [(name, 'cover', 'Atrium północne')]
-                for spoken in (name, name.split('  ')[-1]):
-                    with self.subTest(matcher=matcher, name=name, spoken=spoken):
-                        decision = result('Otwórz '+spoken+' w Atrium północne', rows, matcher=matcher)
-                        self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
-                        self.assertEqual(decision.tool_call.arguments['name'], name)
+        for name in ('zasłony  Zasłona', 'żaluzje  Sterownik'):
+            rows = [(name, 'cover', 'Atrium północne')]
+            for spoken in (name, name.split('  ')[-1]):
+                with self.subTest(name=name, spoken=spoken):
+                    decision = result('Otwórz '+spoken+' w Atrium północne', rows)
+                    self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
+                    self.assertEqual(decision.tool_call.arguments['name'], name)
 
     def test_repeated_spaces_are_not_area_alias_separators(self):
-        for matcher in ('legacy', 'forms'):
-            decision = result('Otwórz Markiza w Atrium północne',
-                              [('Markiza', 'cover', 'Atrium  północne')], matcher=matcher)
-            self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
-            self.assertEqual(decision.tool_call.arguments['area'], 'Atrium  północne')
+        decision = result('Otwórz Markiza w Atrium północne',
+                          [('Markiza', 'cover', 'Atrium  północne')])
+        self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
+        self.assertEqual(decision.tool_call.arguments['area'], 'Atrium  północne')
 
     def test_short_name_parts_do_not_hide_collisions(self):
-        for matcher in ('legacy', 'forms'):
-            rows = [('Rolety  Sterownik', 'cover', 'Atrium'),
-                    ('Rolety  Napęd', 'cover', 'Atrium')]
-            decision = result('Otwórz Rolety w Atrium', rows, matcher=matcher)
-            self.assertEqual(decision.kind, router.DecisionKind.CLARIFY)
-            self.assertIsNone(decision.tool_call)
+        rows = [('Rolety  Sterownik', 'cover', 'Atrium'),
+                ('Rolety  Napęd', 'cover', 'Atrium')]
+        decision = result('Otwórz Rolety w Atrium', rows)
+        self.assertEqual(decision.kind, router.DecisionKind.CLARIFY)
+        self.assertIsNone(decision.tool_call)
+
+    def test_missing_catalog_blocks_new_action_but_not_ack(self):
+        unavailable = catalog.parse_overview([])
+        messages = [{'role': 'user', 'content': 'Włącz Lampa'}]
+        decision = router.decide(messages, unavailable, tools(), language=get_language('pl'))
+        self.assertEqual((decision.kind, decision.reason),
+                         (router.DecisionKind.PASS, 'catalog-unavailable'))
+        self.assertIsNone(decision.tool_call)
+        messages += [
+            {'role': 'assistant', 'tool_calls': [{'id': 'call_test', 'type': 'function',
+                'function': {'name': 'intent__HassTurnOn', 'arguments': '{"name":"Lampa"}'}}]},
+            {'role': 'tool', 'tool_call_id': 'call_test', 'content': '{"success":true}'},
+        ]
+        decision = router.decide(messages, unavailable, tools(), language=get_language('pl'))
+        self.assertEqual(decision.kind, router.DecisionKind.ACK)
 
     def test_schema_and_tool_choice_respected(self):
         messages = [{'role': 'user', 'content': 'Włącz lampę'}]
-        for mutation in ('required', 'enum', 'ref', 'missing-domain', 'wrong-type', 'no-schema'):
+        for mutation in ('required', 'enum', 'bad-enum', 'ref', 'unused-ref', 'missing-domain', 'wrong-type', 'no-schema'):
             available = tools()
             fn = available[0]['function']
             schema = fn['parameters']
@@ -293,8 +304,12 @@ class PublicationRouterTests(unittest.TestCase):
                 schema['required'].append('brightness')
             elif mutation == 'enum':
                 schema['properties']['domain']['items']['enum'] = ['cover']
+            elif mutation == 'bad-enum':
+                schema['properties']['name']['enum'] = 'Lampa'
             elif mutation == 'ref':
                 schema['$ref'] = 'https://invalid.example/schema'
+            elif mutation == 'unused-ref':
+                schema['properties']['unused'] = {'$ref': 'https://invalid.example/schema'}
             elif mutation == 'missing-domain':
                 del schema['properties']['domain']
             elif mutation == 'wrong-type':
@@ -400,7 +415,7 @@ class PublicationRouterTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(directory.stat().st_mode),0o700)
 
     def test_gateway_requires_a_prompt_counter_before_listening(self):
-        proc = subprocess.run([sys.executable, str(GATEWAY/'qwen_npu_gateway.py')],
+        proc = subprocess.run([sys.executable, str(GATEWAY/'chat_gateway.py')],
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 2)
         self.assertIn('prompt counter is required', proc.stderr)
