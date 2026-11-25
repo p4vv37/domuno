@@ -6,6 +6,10 @@
 
 **A local, Polish-first voice assistant for Home Assistant on Arduino VENTUNO Q.**
 
+Domuno was built for Polish first, but it is multilingual: English and Spanish
+show how the same stack can support other languages. Choose one language per
+installation with `AGENT_LANGUAGE` (`pl`, `en`, or `es`).
+
 The name joins *dom* (home) with *Ventuno*, the board the assistant runs on.
 Whisper, Qwen2.5 and Pocket TTS run on one small board. Home Assistant keeps the
 conversation, the device catalog and the actual device control. No cloud inference,
