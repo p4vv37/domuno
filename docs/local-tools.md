@@ -1,6 +1,6 @@
 # Optional web search and weather
 
-Domuno can offer two read-only tools to Qwen on a new user turn, after the command router. The gateway handles local calls within the original Home Assistant request. If Qwen chooses an HA tool instead, HA still executes it. A response that mixes local calls with HA actions is rejected without executing either.
+Domuno can offer three read-only tools to Qwen on a new user turn, after the command router. The gateway handles local calls within the original Home Assistant request. If Qwen chooses an HA tool instead, HA still executes it. A response that mixes local calls with HA actions is rejected without executing either.
 
 ## Enable
 
@@ -28,6 +28,6 @@ Clear the key or both coordinates to disable the corresponding tool, and restart
 
 ## Context and latency
 
-Search selects up to three short extracts from different domains, with lexical overlap and provider rank as signals. It does not fetch result pages. Weather contributes the current conditions and up to three daily summaries. The evidence is bounded by result count and character limits, not an exact token count; the gateway runs its full prompt counter for both model rounds. No model call is spent summarizing search results before answering.
+Search selects up to three short extracts from different domains, with lexical overlap and provider rank as signals. It does not fetch result pages. Weather offers two separate tools: `domuno_get_current_weather` returns only current conditions, and `domuno_get_weather_forecast` returns only the selected day (`today`, `tomorrow` or `day_after_tomorrow`). The evidence is bounded by result count and character limits, not an exact token count; the gateway runs its full prompt counter for both model rounds. No model call is spent summarizing search results before answering.
 
 The first model completion is buffered so an internal call cannot escape to HA. A selected local tool runs once. For the second model round the gateway sends only the latest question and compact evidence in a fresh prompt without tools or the HA inventory; only final text can go back to HA. Provider errors or empty results produce a short fallback instead of asking the model to guess. The fresh prompt does not assume a KV-cache hit. Validate live GenieX tool selection and voice latency before enabling broadly.

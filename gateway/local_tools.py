@@ -20,15 +20,22 @@ def _get(url, params, headers):
     return json.loads(raw)
 
 
-def _schema(name, description, field, required):
+def _schema(name, description, field, required, *, days=False):
+    properties = {field: {'type': 'string'}}
+    required = [field] if required else []
+    if days:
+        properties['day'] = {'type': 'string', 'enum': list(DAYS)}
+        required.append('day')
     return {'type': 'function', 'function': {'name': name, 'description': description,
-            'parameters': {'type': 'object', 'properties': {field: {'type': 'string'}},
-                           'required': [field] if required else [], 'additionalProperties': False}}}
+            'parameters': {'type': 'object', 'properties': properties,
+                           'required': required, 'additionalProperties': False}}}
 
 
 SEARCH = 'domuno_web_search'
-WEATHER = 'domuno_get_weather'
-NAMES = frozenset((SEARCH, WEATHER))
+CURRENT = 'domuno_get_current_weather'
+FORECAST = 'domuno_get_weather_forecast'
+DAYS = ('today', 'tomorrow', 'day_after_tomorrow')
+NAMES = frozenset((SEARCH, CURRENT, FORECAST, 'domuno_get_weather'))
 MESSAGES = {
     'pl': ('Nie udało mi się tego teraz sprawdzić.', 'Nie znalazłem trafnych wyników.'),
     'en': ('I couldn’t check that right now.', 'I found no relevant results.'),
@@ -51,14 +58,19 @@ class LocalTools:
         if key:
             self.schemas.append(_schema(SEARCH, 'Search public web for fresh facts. Query must contain only public search terms, never home details.', 'query', True))
         if location is not None:
-            self.schemas.append(_schema(WEATHER, 'Get current weather and three-day forecast. Omit city for the configured location; otherwise give only an explicitly requested city.', 'city', False))
+            location_hint = ' Omit city for the configured location; otherwise give only an explicitly requested city.'
+            self.schemas.extend((
+                _schema(CURRENT, 'Get current temperature and conditions, not a forecast.' + location_hint, 'city', False),
+                _schema(FORECAST, 'Get a daily forecast for today, tomorrow or the day after tomorrow, including probability of precipitation.' + location_hint, 'city', False, days=True),
+            ))
 
     def run(self, name, arguments):
         if name not in {item['function']['name'] for item in self.schemas}:
             raise ValueError('Tool disabled')
         args = json.loads(arguments)
         field = 'query' if name == SEARCH else 'city'
-        if not isinstance(args, dict) or args.keys() - {field}:
+        fields = {field, 'day'} if name == FORECAST else {field}
+        if not isinstance(args, dict) or args.keys() - fields:
             raise ValueError('Invalid tool arguments')
         value = args.get(field, '')
         if not isinstance(value, str) or len(value) > (240 if name == SEARCH else 80) or field in args and not value.strip():
@@ -69,7 +81,10 @@ class LocalTools:
             if self.cue is not None:
                 self.cue.play()
             return self._search(value.strip())
-        return self._weather(value.strip())
+        day = args.get('day')
+        if name == FORECAST and day not in DAYS:
+            raise ValueError('Invalid forecast day')
+        return self._weather(value.strip(), day)
 
     def _search(self, query):
         data = self.get('https://api.search.brave.com/res/v1/web/search',
@@ -99,9 +114,9 @@ class LocalTools:
                 break
         return '\n'.join(selected) or None
 
-    def _weather(self, city):
+    def _weather(self, city, day):
         lat, lon, label = self.location
-        if city:
+        if city and city.casefold() != label.casefold():
             data = self.get('https://geocoding-api.open-meteo.com/v1/search',
                             {'name': city, 'count': 1, 'language': self.language}, {})
             if not data.get('results'):
@@ -109,11 +124,14 @@ class LocalTools:
             place = data['results'][0]
             lat, lon = place['latitude'], place['longitude']
             label = ', '.join(filter(None, (_clean(place['name'], 60), _clean(place.get('country'), 40))))
-        data = self.get('https://api.open-meteo.com/v1/forecast', {
-            'latitude': lat, 'longitude': lon, 'timezone': 'auto', 'forecast_days': 3,
-            'current': 'temperature_2m,weather_code',
-            'daily': 'temperature_2m_min,temperature_2m_max,weather_code,precipitation_probability_max'}, {})
-        current, daily = data['current'], data['daily']
+        params = {'latitude': lat, 'longitude': lon, 'timezone': 'auto'}
+        if day is None:
+            params['current'] = 'temperature_2m,weather_code'
+        else:
+            index = DAYS.index(day)
+            params.update(forecast_days=index + 1,
+                          daily='temperature_2m_min,temperature_2m_max,weather_code,precipitation_probability_max')
+        data = self.get('https://api.open-meteo.com/v1/forecast', params, {})
         def number(value):
             if type(value) not in (int, float) or not math.isfinite(value):
                 raise ValueError('Invalid forecast')
@@ -125,11 +143,19 @@ class LocalTools:
                      (82, 'showers', 'przelotny deszcz', 'chubascos'), (86, 'snow showers', 'przelotny śnieg', 'chubascos de nieve'),
                      (99, 'thunderstorm', 'burza', 'tormenta')]
             return next(row[{'pl': 2, 'es': 3}.get(self.language, 1)] for row in bands if code <= row[0])
-        lines = [f'Open-Meteo | {label}', f'{current["time"]}: {number(current["temperature_2m"])}°C, {condition(current["weather_code"])}']
-        for i, day in enumerate(daily['time'][:3]):
-            lines.append(f'{day}: {number(daily["temperature_2m_min"][i])}–{number(daily["temperature_2m_max"][i])}°C, '
-                         f'{condition(daily["weather_code"][i])}, precipitation probability {number(daily["precipitation_probability_max"][i])}%')
-        return '\n'.join(lines)
+        if day is None:
+            current = data['current']
+            now = {'pl': 'teraz', 'es': 'ahora'}.get(self.language, 'now')
+            return (f'Open-Meteo | {label} | {now} {current["time"]}: '
+                    f'{number(current["temperature_2m"])}°C, {condition(current["weather_code"])}')
+        daily = data['daily']
+        days = {'pl': ('dziś', 'jutro', 'pojutrze'), 'es': ('hoy', 'mañana', 'pasado mañana')}
+        when = days.get(self.language, DAYS)[index]
+        rain = {'pl': 'prawdopodobieństwo opadów', 'es': 'probabilidad de precipitación'}.get(
+            self.language, 'precipitation probability')
+        return (f'Open-Meteo | {label} | {when} {daily["time"][index]}: '
+                f'{number(daily["temperature_2m_min"][index])}–{number(daily["temperature_2m_max"][index])}°C, '
+                f'{condition(daily["weather_code"][index])}, {rain} {number(daily["precipitation_probability_max"][index])}%')
 
 
 def from_environment(language):

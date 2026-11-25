@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'gateway'))
 from chat_gateway import make_handler
-from local_tools import LocalTools, SEARCH, WEATHER
+from local_tools import LocalTools, SEARCH, CURRENT, FORECAST
 
 
 class LocalToolTests(unittest.TestCase):
@@ -73,14 +73,27 @@ class LocalToolTests(unittest.TestCase):
         self.assertIn('Odpowiedź.', response)
         self.assertTrue(response.endswith('data: [DONE]\n\n'))
 
-    def test_weather_uses_configured_location_and_returns_json(self):
-        get = Mock(return_value={'current': {'time': '2026-11-25T10:00', 'temperature_2m': 4, 'weather_code': 3},
-            'daily': {'time': ['2026-11-25'], 'temperature_2m_min': [1], 'temperature_2m_max': [7],
-                      'weather_code': [61], 'precipitation_probability_max': [80]}})
-        response, requests, _ = self.exchange(LocalTools(location=(50, 19, 'Kraków'), get=get), WEATHER, {}, stream=False)
-        self.assertEqual(get.call_args.args[1]['latitude'], 50)
-        self.assertIn('80%', str(requests[1]))
+    def test_current_weather_excludes_forecast(self):
+        get = Mock(return_value={'current': {'time': '2026-11-25T10:00', 'temperature_2m': 4, 'weather_code': 3}})
+        response, requests, _ = self.exchange(LocalTools(location=(52, 21, 'Warszawa'), get=get),
+                                               CURRENT, {'city': 'Warszawa'}, stream=False)
+        get.assert_called_once()
+        self.assertEqual(get.call_args.args[1]['latitude'], 52)
+        self.assertNotIn('daily', get.call_args.args[1])
+        self.assertIn('teraz 2026-11-25T10:00: 4°C', str(requests[1]))
         self.assertEqual(json.loads(response)['choices'][0]['message']['content'], 'Odpowiedź.')
+
+    def test_forecast_returns_only_tomorrow(self):
+        get = Mock(return_value={'daily': {'time': ['2026-11-25', '2026-11-26'],
+            'temperature_2m_min': [1, 2], 'temperature_2m_max': [7, 8],
+            'weather_code': [61, 3], 'precipitation_probability_max': [80, 10]}})
+        _, requests, _ = self.exchange(LocalTools(location=(52, 21, 'Warszawa'), get=get),
+                                        FORECAST, {'day': 'tomorrow'})
+        self.assertNotIn('current', get.call_args.args[1])
+        self.assertEqual(get.call_args.args[1]['forecast_days'], 2)
+        self.assertIn('jutro 2026-11-26', str(requests[1]))
+        self.assertNotIn('2026-11-25', str(requests[1]))
+        self.assertIn('10%', str(requests[1]))
 
     def test_provider_failure_and_mixed_calls_do_not_request_second_round(self):
         for extra in ((), ({'function': {'name': 'HassTurnOn'}},)):
