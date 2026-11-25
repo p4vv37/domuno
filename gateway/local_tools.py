@@ -168,10 +168,9 @@ def from_environment(language):
             raise ValueError('Invalid weather coordinates')
         location = (lat, lon, _clean(os.environ.get('WEATHER_LOCATION', 'Local'), 80))
     cue = None
-    path = os.environ.get('SEARCH_CUE_FILE', '')
-    if key and path:
-        from wait_sound import from_environment as audio_from_environment
-        cue = audio_from_environment(cue_file=path)
+    if key:
+        from search_cue import from_environment as cue_from_environment
+        cue = cue_from_environment(language)
     return LocalTools(key, location, language, cue=cue) if key or location else None
 
 
