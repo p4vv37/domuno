@@ -113,9 +113,9 @@ class WaitSound:
             self._lva_volume.close()
 
 
-def from_environment():
-    """Disabled by default; missing optional audio support never blocks startup."""
-    enabled = os.environ.get('LLM_WAIT_SOUND', '0')
+def from_environment(*, cue_file=None):
+    """Disabled by default; an explicit cue file opts into the same audio settings."""
+    enabled = '1' if cue_file else os.environ.get('LLM_WAIT_SOUND', '0')
     if enabled not in ('0', '1'):
         raise ValueError('LLM_WAIT_SOUND must be 0 or 1')
     if enabled == '0':
@@ -130,7 +130,7 @@ def from_environment():
     if volume == 0:
         return None
     player = shutil.which('paplay')
-    filename = os.environ.get('LLM_WAIT_SOUND_FILE', '')
+    filename = cue_file or os.environ.get('LLM_WAIT_SOUND_FILE', '')
     if player is None or filename and (not Path(filename).is_absolute() or not Path(filename).is_file()):
         print('WARNING: LLM waiting sound disabled: check paplay and LLM_WAIT_SOUND_FILE', file=sys.stderr)
         return None

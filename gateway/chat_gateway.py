@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """GenieX v0.11.0 gateway with optional v0.9.3 compatibility; stdlib only, never executes HA tools.
 
-Only model catalog and chat completions are exposed. SSE bytes are forwarded
-unchanged, with optional bounded observation for payload-free metrics.
+Only model catalog and chat completions are exposed. The default route forwards
+SSE unchanged; optional local tools intercept their own calls.
 The LAN listener is unauthenticated unless GATEWAY_API_KEY is set. Do not expose it to the public Internet.
 """
 import argparse
@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from datetime import datetime
 
 from gateway_metrics import RequestMetrics, ResponseObserver
+from local_tools import NAMES as LOCAL_NAMES
 
 MODEL = 'bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_0'
 MAX_BODY = 2 * 1024 * 1024
@@ -316,7 +317,7 @@ def build_clarify_sse(text):
     return ''.join('data: %s\n\n' % json.dumps(e, ensure_ascii=False) for e in events) + 'data: [DONE]\n\n'
 
 
-def make_handler(upstream, model=MODEL, nctx=10240, api_key='', prompt_counter=None, context_auditor=None, context_audit_fn=None, decision_fn=None, decide_apply=False, clarify_text=None, metrics_logger=None, backend_version='unknown', metrics_profile='default', cache_policy='reuse', response_style='concise', router_miss_logger=None, request_capture=None, agent_language='pl', wait_sound=None):
+def make_handler(upstream, model=MODEL, nctx=10240, api_key='', prompt_counter=None, context_auditor=None, context_audit_fn=None, decision_fn=None, decide_apply=False, clarify_text=None, metrics_logger=None, backend_version='unknown', metrics_profile='default', cache_policy='reuse', response_style='concise', router_miss_logger=None, request_capture=None, agent_language='pl', wait_sound=None, local_tools=None):
     if response_style not in ('concise', 'original'):
         raise ValueError('response_style must be concise or original')
     if cache_policy not in ('reuse', 'reset'):
@@ -502,31 +503,12 @@ def make_handler(upstream, model=MODEL, nctx=10240, api_key='', prompt_counter=N
                                            response_kind='toolcall' if decision.kind.value == 'toolcall' else 'text')
                 self.send_router_decision(decision, body)
                 return
-            # The counter must count the FULL rendered template/tools. It fails
-            # closed before even the internal reset touches the native SDK.
-            # main() always configures one; tests may inject None to isolate the
-            # proxy without a tokenizer.
             self.metrics.record['route'] = 'llm'
-            if prompt_counter is not None:
-                stage = time.perf_counter()
-                try:
-                    prompt_tokens = prompt_counter(body)
-                    if type(prompt_tokens) is not int or prompt_tokens < 0:
-                        raise ValueError('Invalid token counter result')
-                except Exception:
-                    # The counter may be external; never log its exception contents.
-                    print('BUDGET_REJECT: counter failure', flush=True)
-                    self.error_json(503, 'Prompt budget verification unavailable; native backend was not contacted')
-                    self.metrics.record['outcome'] = 'rejected'
-                    return
-                finally:
-                    self.metrics.record['budget_ms'] = self.metrics.elapsed(stage)
-                self.metrics.record['estimated_prompt_tokens'] = prompt_tokens
-                required = prompt_tokens + body['max_completion_tokens'] + 64
-                if required > nctx:
-                    self.error_json(413, 'Context budget exceeded: prompt=%d, output=%d, reserve=64, context=%d; native backend was not contacted' %
-                                    (prompt_tokens, body['max_completion_tokens'], nctx))
-                    return
+            if local_tools is not None and self._offer_local_tools(body):
+                self._local_chat(body)
+                return
+            if not self._check_budget(body):
+                return
             stage = time.perf_counter()
             acquired = gate.acquire(timeout=30)
             self.metrics.record['queue_ms'] = self.metrics.elapsed(stage)
@@ -627,6 +609,132 @@ def make_handler(upstream, model=MODEL, nctx=10240, api_key='', prompt_counter=N
                     conn.close()
                 self.close_connection = True
                 gate.release()
+        def _check_budget(self, body):
+            if prompt_counter is not None:
+                stage = time.perf_counter()
+                try:
+                    prompt_tokens = prompt_counter(body)
+                    if type(prompt_tokens) is not int or prompt_tokens < 0:
+                        raise ValueError('Invalid token counter result')
+                except Exception:
+                    # The counter may be external; never log its exception contents.
+                    print('BUDGET_REJECT: counter failure', flush=True)
+                    self.error_json(503, 'Prompt budget verification unavailable; native backend was not contacted')
+                    self.metrics.record['outcome'] = 'rejected'
+                    return False
+                finally:
+                    self.metrics.record['budget_ms'] = self.metrics.elapsed(stage)
+                self.metrics.record['estimated_prompt_tokens'] = prompt_tokens
+                required = prompt_tokens + body['max_completion_tokens'] + 64
+                if required > nctx:
+                    self.error_json(413, 'Context budget exceeded: prompt=%d, output=%d, reserve=64, context=%d; native backend was not contacted' %
+                                    (prompt_tokens, body['max_completion_tokens'], nctx))
+                    return False
+            return True
+
+        @staticmethod
+        def _local_question(body):
+            content = body['messages'][-1].get('content')
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list) and all(isinstance(p, dict) and p.get('type') == 'text'
+                                                   and isinstance(p.get('text'), str) for p in content):
+                return ' '.join(p['text'] for p in content).strip()
+            return ''
+
+        def _offer_local_tools(self, body):
+            messages = body['messages']
+            tools = body.get('tools')
+            return (messages and isinstance(messages[-1], dict) and messages[-1].get('role') == 'user'
+                    and bool(self._local_question(body))
+                    and body.get('tool_choice') in (None, 'auto') and body.get('n', 1) == 1
+                    and not body.get('functions') and (tools is None or isinstance(tools, list)
+                    and all(isinstance(t, dict) and isinstance(t.get('function'), dict)
+                            and t['function'].get('name') not in LOCAL_NAMES for t in tools)))
+
+        def _complete_local_round(self, body):
+            if not self._check_budget(body):
+                return None
+            if not gate.acquire(timeout=30):
+                self.error_json(429, 'One inference is already running; retry later')
+                return None
+            try:
+                requests = [body]
+                if cache_policy == 'reset':
+                    requests.insert(0, normalize_request({'messages': RESET_MESSAGES, 'stream': False,
+                                                         'max_tokens': 1}, model, nctx))
+                for request in requests:
+                    conn = http.client.HTTPConnection(target.hostname, target.port, timeout=180)
+                    try:
+                        conn.request('POST', '/v1/chat/completions', body=json.dumps(request, ensure_ascii=False).encode(),
+                                     headers={'Content-Type': 'application/json', 'Accept-Encoding': 'identity'})
+                        response = conn.getresponse()
+                        raw = response.read(MAX_BODY + 1)
+                        if response.status != 200 or len(raw) > MAX_BODY:
+                            raise ValueError('Invalid backend response')
+                    finally:
+                        conn.close()
+                return json.loads(raw)
+            finally:
+                gate.release()
+
+        def _local_chat(self, body):
+            from local_tools import resolve_completion
+            first = {**body, 'stream': False, 'parallel_tool_calls': False,
+                     'tools': [*(body.get('tools') or []), *local_tools.schemas]}
+            first.pop('stream_options', None)
+            try:
+                if wait_sound is not None:
+                    wait_sound.play()
+                result = self._complete_local_round(first)
+                if result is None:
+                    return
+                stage = time.perf_counter()
+                resolution = resolve_completion(local_tools, result, self._local_question(body))
+                if resolution is not None:
+                    self.metrics.record['local_tool_ms'] = self.metrics.elapsed(stage)
+                    self.metrics.record['route'] = 'local_tool'
+                    text = resolution
+                    if isinstance(resolution, list):
+                        second = normalize_request({'messages': resolution, 'stream': False,
+                                                    'max_tokens': min(192, body['max_completion_tokens'])}, model, nctx)
+                        answer = self._complete_local_round(second)
+                        if answer is None:
+                            return
+                        final, = answer['choices']
+                        msg = final['message']
+                        text = local_tools.failure
+                        if (final.get('finish_reason') == 'stop' and not msg.get('tool_calls')
+                                and not msg.get('function_call') and isinstance(msg.get('content'), str)
+                                and msg['content'].strip()):
+                            text = msg['content']
+                    result = build_clarify_response(model, text)
+                self._emit_completion(result, bool(body.get('stream')))
+            except (OSError, http.client.HTTPException, KeyError, TypeError, ValueError, AttributeError):
+                self.error_json(502, 'Invalid or unavailable model response')
+
+        def _emit_completion(self, result, stream):
+            choice, = result['choices']
+            message = choice['message']
+            if stream:
+                delta = {'role': 'assistant', 'content': message.get('content')}
+                if message.get('tool_calls'):
+                    delta['tool_calls'] = [{**call, 'index': i} for i, call in enumerate(message['tool_calls'])]
+                common = {'id': result.get('id') or _new_chat_id(), 'object': 'chat.completion.chunk',
+                          'created': result.get('created', int(time.time())), 'model': model}
+                events = [{**common, 'choices': [{'index': 0, 'delta': value, 'finish_reason': finish}]}
+                          for value, finish in ((delta, None), ({}, choice.get('finish_reason')))]
+                data = (''.join('data: %s\n\n' % json.dumps(event, ensure_ascii=False) for event in events)
+                        + 'data: [DONE]\n\n').encode()
+            else:
+                data = json.dumps(result, ensure_ascii=False).encode()
+            self.metrics.record.update(outcome='completed', response_kind='toolcall' if message.get('tool_calls') else 'text')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream; charset=utf-8' if stream else 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def log_message(self, fmt, *args):
             # Do not log prompts, headers, API keys or tool arguments.
             print('%s %s' % (self.log_date_time_string(), fmt % args), flush=True)
@@ -689,6 +797,8 @@ def main():
     try:
         from wait_sound import from_environment as wait_sound_from_environment
         wait_sound = wait_sound_from_environment()
+        from local_tools import from_environment as local_tools_from_environment
+        local_tools = local_tools_from_environment(args.agent_language)
         miss_logger = router_miss_logger(args.router_miss_log_dir, args.router_miss_until)
         audit_dir = configured_log_directory(args.context_audit_dir, 'CONTEXT_AUDIT')
         capture_dir = configured_log_directory(args.request_capture_dir, 'CONTEXT_CAPTURE')
@@ -723,7 +833,7 @@ def main():
             print('WARNING: router language warmup incomplete', file=sys.stderr, flush=True)
         decision_fn = partial(decide_request, language=language)
         clarify_fn = partial(clarify_text, language=language)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(args.upstream, args.model, args.nctx, key, prompt_counter=counter, context_auditor=context_auditor, context_audit_fn=context_audit_fn, decision_fn=decision_fn, decide_apply=args.decide_apply, clarify_text=clarify_fn, metrics_logger=metrics_logger, backend_version=args.backend_version, metrics_profile=args.metrics_profile, cache_policy=args.cache_policy, response_style=args.response_style, router_miss_logger=miss_logger, request_capture=request_capture, agent_language=args.agent_language, wait_sound=wait_sound))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(args.upstream, args.model, args.nctx, key, prompt_counter=counter, context_auditor=context_auditor, context_audit_fn=context_audit_fn, decision_fn=decision_fn, decide_apply=args.decide_apply, clarify_text=clarify_fn, metrics_logger=metrics_logger, backend_version=args.backend_version, metrics_profile=args.metrics_profile, cache_policy=args.cache_policy, response_style=args.response_style, router_miss_logger=miss_logger, request_capture=request_capture, agent_language=args.agent_language, wait_sound=wait_sound, local_tools=local_tools))
     server.daemon_threads = True
     notify_ready()
     print('Qwen gateway listening on %s:%s; authentication=%s' %
@@ -735,6 +845,8 @@ def main():
     finally:
         if wait_sound is not None:
             wait_sound.close()
+        if local_tools is not None and local_tools.cue is not None:
+            local_tools.cue.close()
         server.server_close()
         if miss_logger is not None:
             miss_logger.close()

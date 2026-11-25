@@ -12,8 +12,14 @@ installation with `AGENT_LANGUAGE` (`pl`, `en`, or `es`).
 
 The name joins *dom* (home) with *Ventuno*, the board the assistant runs on.
 Whisper, Qwen2.5 and Pocket TTS run on one small board. Home Assistant keeps the
-conversation, the device catalog and the actual device control. No cloud inference,
-no cloud API keys, no GPU machine running 24/7.
+conversation, the device catalog and the actual device control. The core voice stack
+needs no cloud inference or cloud API keys. Optional web search and weather use external APIs.
+
+## Changelog
+
+**Unreleased (`meteo_brave`):** Optional Brave web search and Open-Meteo weather.
+Qwen chooses when to use them; the gateway runs them without an extra Home
+Assistant round trip. See [setup and Arduino smoke tests](docs/local-tools.md).
 
 <p align="center">
   <img src="docs/images/arduino-ventuno-q.jpg" alt="Arduino VENTUNO Q with a USB conference speaker" width="85%">
