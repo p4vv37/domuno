@@ -24,7 +24,8 @@ class LocalToolTests(unittest.TestCase):
                     calls = [{'id': 'call_local', 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(args)}}, *extra]
                     choice = {'message': {'role': 'assistant', 'tool_calls': calls}, 'finish_reason': 'tool_calls'}
                 else:
-                    choice = final or {'message': {'role': 'assistant', 'content': 'Odpowiedź.'}, 'finish_reason': 'stop'}
+                    choice = final or {'message': {'role': 'assistant', 'content': 'Odpowiedź.', 'function_call': {'name': '', 'arguments': ''}},
+                                       'finish_reason': 'stop'}
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(json.dumps({'choices': [choice]}).encode())

@@ -705,7 +705,8 @@ def make_handler(upstream, model=MODEL, nctx=10240, api_key='', prompt_counter=N
                         msg = final['message']
                         text = local_tools.failure
                         if (final.get('finish_reason') == 'stop' and not msg.get('tool_calls')
-                                and not msg.get('function_call') and isinstance(msg.get('content'), str)
+                                and msg.get('function_call') in (None, {}, {'name': '', 'arguments': ''})
+                                and isinstance(msg.get('content'), str)
                                 and msg['content'].strip()):
                             text = msg['content']
                     result = build_clarify_response(model, text)
