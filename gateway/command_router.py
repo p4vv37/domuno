@@ -387,6 +387,8 @@ def decide(messages, catalog: Catalog | None, tools, default_area=None, tool_cho
         return Decision(kind=kind, reason=command.reason)
     intent = command.intent
     if command.position is not None:
+        if intent not in ('open', 'close', 'position'):
+            return Decision(kind=DecisionKind.PASS, reason='outside-grammar')
         intent = 'position'
     tail = command.target.split()
     if tool_choice == 'none':

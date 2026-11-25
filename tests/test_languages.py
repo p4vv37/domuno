@@ -63,6 +63,27 @@ class LanguageTests(unittest.TestCase):
                                  (router.DecisionKind.PASS, 'outside-grammar'))
                 self.assertIsNone(fallback.tool_call)
 
+    def test_spanish_single_actions_use_canonical_selectors(self):
+        for text, action in (('Por favor, enciende la luz en la cocina.', 'On'),
+                             ('Apaga la luz en la cocina.', 'Off')):
+            with self.subTest(text=text):
+                result = self.route(text, [('Luz', 'light', 'Cocina')], 'es')
+                self.assertEqual(result.kind, router.DecisionKind.TOOLCALL)
+                self.assertEqual(result.tool_call.name, 'intent__HassTurn' + action)
+                self.assertEqual(result.tool_call.arguments,
+                                 {'name': 'Luz', 'area': 'Cocina', 'domain': ['light']})
+
+    def test_spanish_does_not_drop_scope_or_execute_partial_commands(self):
+        for area, text, reason in (
+                ('Salón', 'En la cocina, enciende la luz.', 'outside-grammar'),
+                ('Cocina', 'Enciende la luz después de cinco minutos.', 'outside-grammar'),
+                ('Cocina', 'Enciende la luz y apaga la luz.', 'outside-grammar'),
+                ('Cocina', 'No encienda la luz.', 'negation')):
+            with self.subTest(text=text):
+                result = self.route(text, [('Luz', 'light', area)], 'es')
+                self.assertEqual(result.reason, reason)
+                self.assertIsNone(result.tool_call)
+
     def test_ambiguity_and_unsupported_domains_use_shared_checks(self):
         rows = [('Lamp', 'light', 'Room A'), ('Lamp', 'light', 'Room B')]
         self.assertEqual(self.route('Turn on Lamp', rows).reason, 'ambiguous-target')
@@ -99,6 +120,7 @@ class LanguageTests(unittest.TestCase):
     def test_registered_strategies_implement_language_contract(self):
         with self.assertRaises(TypeError):
             Language()
+        self.assertCountEqual(language_codes(), ('pl', 'en', 'es'))
         for code in language_codes():
             with self.subTest(code=code):
                 language = get_language(code)

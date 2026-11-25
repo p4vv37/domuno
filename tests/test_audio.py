@@ -1,79 +1,53 @@
-"""Real audio handlers and Whisper prompt planning with fake adapters. No network or hardware."""
-import ast
+"""Audio protocol and Whisper prompt planning with fake adapters. No network or hardware."""
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, Future
-import importlib.util
-import logging
 import json
-import math
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
+import sys
 import time
 from types import SimpleNamespace
 import unittest
-import sys
+
+from wyoming.asr import Transcribe, Transcript
+from wyoming.audio import AudioChunk, AudioStart, AudioStop
+from wyoming.event import Event
+from wyoming.info import Describe
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'stt'))
+import qnn_wyoming_server  # noqa: E402
+import qnn_whisper_engine  # noqa: E402
+import qnn_whisper_profile  # noqa: E402
 from qnn_whisper_engine import forced_decoder_token  # noqa: E402
-try:
-    import numpy as np
-except ImportError:
-    np=None
 
 
-class Wire:
-    def __init__(self, type, **values):
-        self.type=type
-        self.__dict__.update(values)
+class RecordingHandler(qnn_wyoming_server.Handler):
+    """Capture the outbound Wyoming events without opening sockets."""
+    def __init__(self, state):
+        super().__init__(None, None, state)
+        self.events = []
 
-
-class Protocol:
-    @classmethod
-    def is_type(cls, kind): return cls.kind==kind
-    @classmethod
-    def from_event(cls,event): return event
-    def __init__(self,**values): self.__dict__.update(values)
-    def event(self): return Wire(self.kind,**self.__dict__)
-
-
-def namespace(path, names):
-    # Execute the actual handler definitions. Only external Wyoming/model types
-    # are fakes, so the suite also runs without the device's runtime packages.
-    names = names | ({'emit_stt_metric'} if 'Handler' in names else set())
-    tree=ast.parse(path.read_text())
-    body=[ast.ImportFrom(module='__future__',names=[ast.alias(name='annotations')],level=0)]
-    body += [node for node in tree.body if isinstance(node,(ast.ClassDef,ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in names]
-    ns=dict(json=json,math=math,uuid=uuid,datetime=datetime,timezone=timezone,asyncio=asyncio,perf_counter=time.perf_counter,time=time,
-            ThreadPoolExecutor=ThreadPoolExecutor,AsyncEventHandler=object,
-            LOG=logging.getLogger('test-stt'),_LOGGER=logging.getLogger('test-tts'),
-            MAX_BYTES=960000,INFO=Wire('Info'),pcm_decode=lambda raw:raw,
-            numpy=np,_VOICE_STATES={},PREDEFINED_VOICE_NAMES={'shefowl':'unused'},
-            PREFIX_MIN_DURATION=.15,PREFIX_MAX_DURATION=.05,PREFIX_SILENCE_GAP=.08,
-            Event=Wire)
-    for name in ('Describe Transcribe Transcript AudioStart AudioChunk AudioStop Synthesize '
-                 'SynthesizeStart SynthesizeChunk SynthesizeStop SynthesizeStopped Error').split():
-        ns[name]=type(name,(Protocol,),{'kind':name})
-    if 'PocketTTSEventHandler' in names:
-        spec=importlib.util.spec_from_file_location('audio_worker',ROOT/'tts-pocket-wyoming/tts_render_worker.py')
-        worker=importlib.util.module_from_spec(spec);spec.loader.exec_module(worker)
-        ns.update({name:getattr(worker,name) for name in ['RenderWorker','RenderBusy','RequestMetrics','PCMStream','StreamCancelled','TextStream']})
-        backend_spec=importlib.util.spec_from_file_location('audio_backend',ROOT/'tts-pocket-wyoming/rust_tts_backend.py')
-        backend=importlib.util.module_from_spec(backend_spec);backend_spec.loader.exec_module(backend)
-        ns['split_ready_text']=backend.split_ready_text
-    exec(compile(ast.fix_missing_locations(ast.Module(body=body,type_ignores=[])),str(path),'exec'),ns)
-    return ns
+    async def write_event(self, event):
+        self.events.append(event)
 
 
 class STTTests(unittest.IsolatedAsyncioTestCase):
+    def make_handler(self, transcribe=lambda _raw: {'text': 'synthetic fixture'}, *, language='pl'):
+        engine = SimpleNamespace(transcribe=transcribe, close=lambda: None)
+        state = qnn_wyoming_server.State(engine, pcm_decoder=lambda raw: raw, language=language)
+        self.addCleanup(state.close)
+        return RecordingHandler(state)
+
+    async def send_audio(self, handler):
+        await handler.handle_event(AudioStart(16000, 2, 1).event())
+        await handler.handle_event(AudioChunk(16000, 2, 1, b'\x01\x00' * 1600).event())
+        return await handler.handle_event(AudioStop().event())
+
     def test_stt_metrics_filter_payload_and_missing_engine_timings(self):
-        ns = namespace(ROOT/'stt/qnn_wyoming_server.py', {'emit_stt_metric'})
         result = {'text': 'PRIVATE transcript', 'tokens': [1, 2],
                   'timings_seconds': {'encoder': .02, 'total': .03,
                                       'preprocess': float('nan'), 'decoder_steps': ['PRIVATE']}}
-        with self.assertLogs(ns['LOG'], level='INFO') as logs:
-            ns['emit_stt_metric'](time.perf_counter(), 'completed', 2.5, result, 1)
+        with self.assertLogs(qnn_wyoming_server.LOG, level='INFO') as logs:
+            qnn_wyoming_server.emit_stt_metric(time.perf_counter(), 'completed', 2.5, result, 1)
         row = json.loads(logs.output[0].split('stt_metric ', 1)[1])
         self.assertEqual(row['encoder_ms'], 20)
         self.assertEqual(row['engine_ms'], 30)
@@ -82,28 +56,59 @@ class STTTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('PRIVATE', json.dumps(row))
 
     async def test_pcm_protocol_returns_transcript_and_rejects_bad_format(self):
-        ns=namespace(ROOT/'stt/qnn_wyoming_server.py',{'_finish_worker','State','Handler'})
-        engine=SimpleNamespace(transcribe=lambda raw:{'text':'synthetic fixture'},close=lambda:None)
-        state=ns['State'](engine)
-        handler=object.__new__(ns['Handler'])
-        handler.state=state;handler.audio=bytearray();handler.started=False
-        events=[]
-        async def write(event): events.append(event)
-        handler.write_event=write
-        try:
-            await handler.handle_event(Wire('AudioStart',rate=16000,width=2,channels=1))
-            await handler.handle_event(Wire('AudioChunk',rate=16000,width=2,channels=1,audio=b'\x01\x00'*1600))
-            await handler.handle_event(Wire('AudioStop'))
-            self.assertEqual(events[-1].text,'synthetic fixture')
-            success=await handler.handle_event(Wire('AudioStart',rate=8000,width=2,channels=1))
-            self.assertFalse(success)
-            self.assertEqual(events[-1].data['code'],'unsupported-audio')
-        finally: state.close()
+        handler = self.make_handler()
+        self.assertTrue(await self.send_audio(handler))
+        self.assertEqual(Transcript.from_event(handler.events[-1]).text, 'synthetic fixture')
+        self.assertFalse(await handler.handle_event(AudioStart(8000, 2, 1).event()))
+        self.assertEqual(handler.events[-1].data['code'], 'unsupported-audio')
+
+    async def test_describe_advertises_configured_language_and_requires_external_vad(self):
+        for language in ('pl', 'en', 'es'):
+            with self.subTest(language=language):
+                handler = self.make_handler(language=language)
+                self.assertTrue(await handler.handle_event(Describe().event()))
+                info = handler.events[-1]
+                self.assertEqual(info.type, 'info')
+                program, = info.data['asr']
+                self.assertEqual(program['name'], 'whisper-small-qnn-arduino')
+                self.assertIs(program.get('requires_external_vad'), True)
+                self.assertEqual(program['models'][0]['languages'], [language])
+
+    async def test_transcribe_accepts_omitted_and_matching_locale_languages(self):
+        handler = self.make_handler(language='es')
+        for language in (None, 'es', 'ES', 'es-419', 'es_MX', 'es-Latn-ES'):
+            with self.subTest(language=language):
+                handler.events.clear()
+                self.assertTrue(await handler.handle_event(Transcribe(language=language).event()))
+                self.assertEqual(handler.events, [])
+                self.assertTrue(await self.send_audio(handler))
+                self.assertEqual(Transcript.from_event(handler.events[-1]).text, 'synthetic fixture')
+
+    async def test_transcribe_rejects_explicit_unsupported_or_malformed_language(self):
+        handler = self.make_handler(language='es')
+        for language in ('en-US', 'de', None, '', 0, [], {}, 'es-', 'es--ES', 'es-!', 'es-foo'):
+            with self.subTest(language=language):
+                event = Event(type='transcribe', data={'language': language})
+                self.assertFalse(await handler.handle_event(event))
+                error = handler.events[-1]
+                self.assertEqual(error.type, 'error')
+                self.assertEqual(error.data['code'], 'unsupported-language')
+
+    async def test_transcription_failure_logs_without_exception_payload(self):
+        def fail(_raw):
+            raise RuntimeError('PRIVATE audio fixture')
+
+        handler = self.make_handler(fail)
+        with self.assertLogs(qnn_wyoming_server.LOG, level='ERROR') as logs:
+            self.assertFalse(await self.send_audio(handler))
+        error = handler.events[-1]
+        self.assertEqual(error.data['code'], 'transcription-failed')
+        self.assertNotIn('PRIVATE', error.data['text'])
+        self.assertEqual(logs.output, ['ERROR:qnn_wyoming_server:STT_PHASE transcription-failed'])
 
     async def test_cancel_waits_for_native_worker_before_releasing_capacity(self):
-        ns=namespace(ROOT/'stt/qnn_wyoming_server.py',{'_finish_worker'})
         future=asyncio.get_running_loop().create_future()
-        task=asyncio.create_task(ns['_finish_worker'](future))
+        task=asyncio.create_task(qnn_wyoming_server._finish_worker(future))
         await asyncio.sleep(0)
         task.cancel()
         await asyncio.sleep(0)
@@ -112,173 +117,26 @@ class STTTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError): await task
 
 
-@unittest.skipIf(np is None,'NumPy unavailable')
-class TTSTests(unittest.IsolatedAsyncioTestCase):
-    async def run_request(self, generate, streamed=False, buffer_seconds=.02):
-        ns=namespace(ROOT/'tts-pocket-wyoming/wyoming_tts_server.py',{'PocketTTSEventHandler'})
-        class Tensor:
-            def __init__(self,values): self.values=values
-            def detach(self): return self
-            def cpu(self): return self
-            def numpy(self): return self.values
-        class Model:
-            sample_rate=1000
-            reference='/local/reference.wav'
-            def get_state_for_audio_prompt(self,prompt): return {}
-            def generate_audio_stream(self,**kwargs):
-                for values in generate(): yield Tensor(values)
-        handler=object.__new__(ns['PocketTTSEventHandler'])
-        handler.cli_args=SimpleNamespace(voice='shefowl',pcm_streaming=True,pcm_buffer_seconds=buffer_seconds,pcm_allow_slow=True)
-        class InlineWorker:
-            # The executor is a seam. These tests exercise protocol and PCM,
-            # without relying on the host's cross-thread event-loop scheduling.
-            def submit(self, function, *args):
-                result=Future()
-                try: result.set_result(function(*args))
-                except BaseException as error: result.set_exception(error)
-                return result
-            def close(self): pass
-        handler.tts_model=Model();handler.render_worker=InlineWorker()
-        handler.is_streaming=None
-        events=[]
-        async def write(event): events.append(event)
-        handler.write_event=write
-        try:
-            if streamed:
-                await handler.handle_event(Wire('SynthesizeStart',voice=None))
-                await handler.handle_event(Wire('SynthesizeChunk',text='synthetic fixture'))
-                await handler.handle_event(Wire('Synthesize',text='synthetic fixture',voice=None))
-                await handler.handle_event(Wire('SynthesizeStop'))
-            else:
-                await handler.handle_event(Wire('Synthesize',text='synthetic fixture',voice=None))
-            return events
-        finally: handler.render_worker.close()
+class SttLanguageTests(unittest.TestCase):
+    def test_engine_rejects_unknown_language_before_opening_npu(self):
+        with self.assertRaisesRegex(ValueError, 'language must be one of'):
+            qnn_whisper_engine.QnnWhisperEngine(
+                '/nonexistent', '/nonexistent', '/nonexistent',
+                metadata='/nonexistent', language='de')
 
-    def streaming_handler(self):
-        ns = namespace(ROOT/'tts-pocket-wyoming/wyoming_tts_server.py', {'PocketTTSEventHandler'})
-        calls, events = [], []
-        first_audio = asyncio.Event()
-        class Tensor:
-            def detach(self): return self
-            def cpu(self): return self
-            def numpy(self): return np.full(200, .5, dtype=np.float32)
-        class Model:
-            sample_rate = 1000
-            reference = '/local/reference.wav'
-            def get_state_for_audio_prompt(self, prompt): return {}
-            def generate_audio_stream(self, **kwargs):
-                calls.append(kwargs['text_to_generate'])
-                yield Tensor()
-        worker = ns['RenderWorker']()
-        args = SimpleNamespace(voice='shefowl', pcm_streaming=True,
-                               pcm_buffer_seconds=.02, pcm_allow_slow=True)
-        info = SimpleNamespace(event=lambda: Wire('Info'))
-        handler = ns['PocketTTSEventHandler'](info, args, Model(), worker)
-        async def write(event):
-            events.append(event)
-            if event.type == 'AudioChunk': first_audio.set()
-        handler.write_event = write
-        return handler, worker, calls, events, first_audio
-
-    async def test_complete_sentence_is_audible_before_text_stop_without_duplicate_audio(self):
-        handler, worker, calls, events, first_audio = self.streaming_handler()
-        try:
-            await handler.handle_event(Wire('SynthesizeStart', voice=None))
-            await handler.handle_event(Wire('SynthesizeChunk', text='Pierwsze zdanie. D'))
-            await asyncio.wait_for(first_audio.wait(), timeout=2)
-            self.assertEqual(calls, ['... Pierwsze zdanie. '])
-            self.assertFalse(any(e.type in ('AudioStop', 'SynthesizeStopped') for e in events))
-            await handler.handle_event(Wire('SynthesizeChunk', text='rugie zdanie.'))
-            await handler.handle_event(Wire('Synthesize', text='compatibility copy', voice=None))
-            self.assertTrue(await handler.handle_event(Wire('SynthesizeStop')))
-            self.assertEqual(calls, ['... Pierwsze zdanie. ', '... Drugie zdanie.'])
-            self.assertEqual(sum(e.type == 'AudioStart' for e in events), 1)
-            self.assertEqual(sum(e.type == 'AudioStop' for e in events), 1)
-            self.assertEqual(sum(e.type == 'SynthesizeStopped' for e in events), 1)
-            self.assertEqual(len(b''.join(e.audio for e in events if e.type == 'AudioChunk')), 800)
-        finally:
-            await handler.disconnect()
-            await asyncio.to_thread(worker.close)
-
-    async def test_disconnect_stops_waiting_for_more_text_and_releases_worker(self):
-        handler, worker, calls, events, first_audio = self.streaming_handler()
-        try:
-            await handler.handle_event(Wire('SynthesizeStart', voice=None))
-            await handler.handle_event(Wire('SynthesizeChunk', text='Pierwsze zdanie. D'))
-            await asyncio.wait_for(first_audio.wait(), timeout=2)
-            await handler.disconnect()
-            await asyncio.wait_for(asyncio.to_thread(worker._queue.join), timeout=2)
-            self.assertFalse(any(e.type in ('AudioStop', 'SynthesizeStopped') for e in events))
-            self.assertEqual(worker.submit(lambda: 42).result(timeout=1), 42)
-        finally:
-            await handler.disconnect()
-            await asyncio.to_thread(worker.close)
-
-    def test_sentence_split_keeps_abbreviations_and_decimal_fragments(self):
-        ns = namespace(ROOT/'tts-pocket-wyoming/wyoming_tts_server.py', {'PocketTTSEventHandler'})
-        split = ns['split_ready_text']
-        for text in ('To np. przykład', 'Wynik 21.05', 'Czekam...', 'dr. Kowalski'):
-            with self.subTest(text=text): self.assertEqual(split(text), ([], text))
-        self.assertEqual(split('Gotowe. Następne'), (['Gotowe. '], 'Następne'))
-
-    async def test_streamed_text_is_synthesized_once_and_quiet_tail_is_preserved(self):
-        calls=[]
-        def generate():
-            calls.append(1)
-            yield np.concatenate([np.full(200,.5),np.full(2400,.001)]).astype(np.float32)
-        events=await self.run_request(generate,streamed=True)
-        self.assertEqual(len(calls),1)
-        self.assertEqual(events[-1].type,'SynthesizeStopped')
-        pcm=b''.join(e.audio for e in events if e.type=='AudioChunk')
-        self.assertEqual(len(pcm)//2,2600)
-
-    async def test_full_buffer_path_preserves_quiet_tail(self):
-        def generate():
-            yield np.concatenate([np.full(200,.5),np.full(2400,.001)]).astype(np.float32)
-        events = await self.run_request(generate, buffer_seconds=30)
-        pcm = b''.join(e.audio for e in events if e.type == 'AudioChunk')
-        self.assertEqual(len(pcm)//2, 2600)
-
-    async def test_text_limit_is_cumulative_across_chunks(self):
-        handler, worker, calls, events, first_audio = self.streaming_handler()
-        try:
-            await handler.handle_event(Wire('SynthesizeStart', voice=None))
-            await handler.handle_event(Wire('SynthesizeChunk', text='x'*1300))
-            with self.assertRaisesRegex(ValueError, 'text exceeds'):
-                await handler.handle_event(Wire('SynthesizeChunk', text='y'*800))
-            self.assertEqual(calls, [])
-            self.assertFalse(any(e.type == 'SynthesizeStopped' for e in events))
-        finally:
-            await handler.disconnect()
-            await asyncio.to_thread(worker.close)
-
-    async def test_model_failure_does_not_send_success_completion(self):
-        def generate():
-            raise ValueError('synthetic failure')
-            yield
-        events=await self.run_request(generate,streamed=True)
-        self.assertEqual([e.type for e in events],['AudioStart','Error'])
-
-    async def test_second_sentence_failure_does_not_replay_first_or_finish_successfully(self):
-        handler, worker, calls, events, first_audio = self.streaming_handler()
-        generate = handler.tts_model.generate_audio_stream
-        def fail_second(**kwargs):
-            if 'Drugie' in kwargs['text_to_generate']:
-                raise ValueError('synthetic second sentence failure')
-            yield from generate(**kwargs)
-        handler.tts_model.generate_audio_stream = fail_second
-        try:
-            await handler.handle_event(Wire('SynthesizeStart', voice=None))
-            await handler.handle_event(Wire('SynthesizeChunk', text='Pierwsze zdanie. Drugie zdanie.'))
-            await asyncio.wait_for(first_audio.wait(), timeout=2)
-            self.assertFalse(await handler.handle_event(Wire('SynthesizeStop')))
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(len(b''.join(e.audio for e in events if e.type == 'AudioChunk')), 400)
-            self.assertTrue(any(e.type == 'Error' for e in events))
-            self.assertFalse(any(e.type in ('AudioStop', 'SynthesizeStopped') for e in events))
-        finally:
-            await handler.disconnect()
-            await asyncio.to_thread(worker.close)
+    def test_profile_requires_the_token_id_for_the_configured_language(self):
+        class Tokenizer:
+            def get_vocab_size(self):
+                return 51866
+            def token_to_id(self, token):
+                return {'<|yue|>': 50358}.get(token)
+        profile = qnn_whisper_profile.Profile(None)
+        for language, lang_id in (('pl', 50269), ('en', 50259), ('es', 50262)):
+            with self.subTest(language=language):
+                profile.validate_tokenizer(Tokenizer(), [50258, lang_id, 50360, 50364, 50257], language)
+        for lang_id in (0, 50358, 50262):  # invalid, unsupported (yue), and wrong for pl (es)
+            with self.subTest(lang_id=lang_id), self.assertRaisesRegex(ValueError, 'language token'):
+                profile.validate_tokenizer(Tokenizer(), [50258, lang_id, 50360, 50364, 50257], 'pl')
 
 
 class PromptPlanTests(unittest.TestCase):

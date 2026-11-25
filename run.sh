@@ -28,7 +28,7 @@ GENIEX_BIN="${GENIEX_BIN:-$HOME/.local/bin/geniex}"
 CACHE_POLICY="${CACHE_POLICY:-reuse}"
 AGENT_LANGUAGE="${AGENT_LANGUAGE:-pl}"
 STT_PROVIDER="${STT_PROVIDER:-whisper-qnn}"
-TTS_PROVIDER="${TTS_PROVIDER:-pocket-pl}"
+TTS_PROVIDER="${TTS_PROVIDER:-pocket}"
 set +a
 case "$action" in
     check|prepare|start|status|stop)
@@ -36,9 +36,17 @@ case "$action" in
 esac
 
 [[ $STT_PROVIDER == whisper-qnn || $STT_PROVIDER == external ]] || fail 'STT_PROVIDER must be whisper-qnn or external.'
-[[ $TTS_PROVIDER == pocket-pl || $TTS_PROVIDER == external ]] || fail 'TTS_PROVIDER must be pocket-pl or external.'
-if [[ $AGENT_LANGUAGE != pl && ( $STT_PROVIDER != external || $TTS_PROVIDER != external ) ]]; then
-    fail 'Local speech recipes require Polish; select external STT and TTS for other languages.'
+case "$TTS_PROVIDER" in
+    pocket|pocket-pl|external) ;;
+    *) fail 'TTS_PROVIDER must be pocket or external (legacy pocket-pl is accepted).' ;;
+esac
+tts_assets=tts-pocket-wyoming/assets
+tts_tokenizer=pl_bpe4000.model
+tts_reference=reference.wav
+if [[ $AGENT_LANGUAGE != pl ]]; then
+    tts_assets+="/$AGENT_LANGUAGE"
+    tts_tokenizer=tokenizer.json
+    tts_reference=reference.safetensors
 fi
 compose() { docker compose --env-file "$ROOT/.env" -f "$ROOT/$1/docker-compose.yml" "${@:2}"; }
 
@@ -102,11 +110,11 @@ check)
     else
         echo 'EXTERNAL: select your STT integration and language in Home Assistant.'
     fi
-    if [[ $TTS_PROVIDER == pocket-pl ]]; then
-        check 'TTS configuration' test -f tts-pocket-wyoming/assets/config.yaml
-        check 'TTS model' test -f tts-pocket-wyoming/assets/model.safetensors
-        check 'TTS tokenizer' test -f tts-pocket-wyoming/assets/pl_bpe4000.model
-        check 'TTS voice' test -f tts-pocket-wyoming/assets/reference.wav
+    if [[ $TTS_PROVIDER != external ]]; then
+        check 'TTS configuration' test -f "$tts_assets/config.yaml"
+        check 'TTS model' test -f "$tts_assets/model.safetensors"
+        check 'TTS tokenizer' test -f "$tts_assets/$tts_tokenizer"
+        check 'TTS voice' test -f "$tts_assets/$tts_reference"
         check 'Rust ARM64' test -x tts-pocket-wyoming/assets/pocket-tts
         check 'Rust license for image build' test -f tts-pocket-wyoming/assets/LICENSE
     else
@@ -141,8 +149,8 @@ prepare)
     if [[ $STT_PROVIDER == whisper-qnn && ! -d stt/assets ]]; then
         python3 stt/download_whisper_turbo_on_board.py --output "$ROOT/stt/assets" --staging /dev/shm/ha-whisper-download
     fi
-    if [[ $TTS_PROVIDER == pocket-pl ]]; then
-        python3 tts-pocket-wyoming/prepare_assets.py
+    if [[ $TTS_PROVIDER != external ]]; then
+        python3 tts-pocket-wyoming/prepare_assets.py --language "$AGENT_LANGUAGE"
     fi
     prepare_audio
     echo 'Assets downloaded. Set GGUF and QNN_LIB_DIR in .env. ORT/QNN Python packages are installed during the STT image build.'
@@ -153,11 +161,11 @@ start)
         compose stt build
         compose stt create
     fi
-    if [[ $TTS_PROVIDER == pocket-pl ]]; then
+    if [[ $TTS_PROVIDER != external ]]; then
         compose tts-pocket-wyoming build
     fi
     FULL_STACK=1 "$ROOT/setup.sh"
-    if [[ $TTS_PROVIDER == pocket-pl ]]; then
+    if [[ $TTS_PROVIDER != external ]]; then
         compose tts-pocket-wyoming up -d
     fi
     compose lva up -d
@@ -177,7 +185,7 @@ stop)
     for unit in qwen-ha-gateway qwen-ha-counter qwen25-3b-backend; do
         systemctl --user stop "$unit" 2>/dev/null || true
     done
-    if [[ $TTS_PROVIDER == pocket-pl ]]; then
+    if [[ $TTS_PROVIDER != external ]]; then
         compose tts-pocket-wyoming stop
     fi
     compose lva stop

@@ -1,6 +1,6 @@
 # Configuration
 
-Everything user-facing is configured in one `.env` file:
+Configure the stack in `.env`:
 
 ```bash
 cp .env.example .env
@@ -29,7 +29,7 @@ contain the board image, the drivers or the model weights.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `NCTX` | `10240` | Model context size. Allowed range: 2048–10240. |
-| `AGENT_LANGUAGE` | `pl` | Router language: `pl` or `en`. Does not change the speech models. |
+| `AGENT_LANGUAGE` | `pl` | Router and local speech language: `pl`, `en` or `es`. Selects the Pocket TTS model and the Whisper decoder language, not the Qwen or Whisper weights. |
 | `DECIDE_APPLY` | `1` | `1` lets the router answer recognized commands locally; `0` sends everything to Qwen. |
 | `RESPONSE_STYLE` | `concise` | `concise` prepends one stable short-answer instruction; `original` leaves the HA prompt unchanged. |
 | `CACHE_POLICY` | `reuse` | `reuse` keeps the KV prefix on GenieX 0.11.0; `reset` inserts the legacy reset turn, required for GenieX 0.9.3. |
@@ -81,15 +81,14 @@ they do not consume the prompt budget. The grammar, vocabulary format and fallba
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `STT_PROVIDER` | `whisper-qnn` | `whisper-qnn` runs the local Whisper Large-v3-Turbo adapter; `external` means HA manages STT elsewhere. |
-| `STT_PROMPT` | empty | Static Polish decoder prompt for local Whisper. Empty uses the built-in command/room vocabulary. |
-| `TTS_PROVIDER` | `pocket-pl` | `pocket-pl` runs the local Polish Pocket TTS server; `external` means HA manages TTS elsewhere. |
+| `STT_PROMPT` | empty | Optional static decoder prompt for local Whisper. Empty or unset means no prompt. |
+| `TTS_PROVIDER` | `pocket` | `pocket` runs local Pocket TTS for `AGENT_LANGUAGE`; `external` means HA manages TTS elsewhere. `pocket-pl` remains a legacy alias for `pocket`. |
 
-The local Whisper decoder is primed with a short static Polish prompt (command
-verbs and common rooms). It is not built from the live HA catalog. The prompt
-adds a few fixed decoder steps; set `STT_PROMPT` to a sentence list to override
-it, or to a single space if you want to disable it.
+Keep `STT_PROMPT` empty unless you are deliberately testing decoder bias. A
+nonempty value is not derived from the HA catalog and can cause empty transcripts
+on this quantized decoder.
 
-Each selection is independent, so a Polish pipeline can combine one local and one
+Each selection is independent, so a pipeline in any language can combine one local and one
 external stage. `external` means “managed outside these scripts”, not necessarily
 cloud-hosted.
 
@@ -98,18 +97,28 @@ For a local stage, `prepare` downloads its assets, `check` verifies them, and
 skipped completely. Changing the setting does not remove an already installed
 unit or container; old deployments remain under their current owner's control.
 
-The local Whisper adapter explicitly selects Polish, and `pocket-pl` is a Polish
-checkpoint with Polish number normalization. The full-stack scripts therefore
-reject English with either local recipe selected. For an English router, use:
+Local Whisper loads the same multilingual artifact for all three languages and
+advertises the configured language; it does not autodetect language. Pocket TTS
+uses a language-specific recipe. Match both services to your Assist pipeline.
+Native English and Spanish synthesis and end-to-end board validation are pending.
 
-```dotenv
-AGENT_LANGUAGE=en
-STT_PROVIDER=external
-TTS_PROVIDER=external
-```
+### Preparing local Pocket TTS
 
-and select English STT/TTS in the HA Assist pipeline. No English speech model is
-downloaded by this repository.
+1. Set `TTS_PROVIDER=pocket` and `AGENT_LANGUAGE=pl`, `en` or `es` in `.env`.
+2. Run `./run.sh prepare` to download the selected assets. Polish uses the public
+   [Polish fine-tune](https://huggingface.co/shefowl/pocket-tts-polish-6l).
+   English and Spanish use the public, non-cloning
+   [official Kyutai weights](https://huggingface.co/kyutai/pocket-tts) and preset
+   voices. The bundled recipes do not need a Hugging Face account or `HF_TOKEN`.
+3. Run `./run.sh check`, then start the stack or follow the
+   [migration steps](operations.md#speech-migration-checks) for an existing deployment.
+
+Preparation needs Internet access for downloads. After preparation and image
+setup, Pocket TTS loads local files and synthesizes offline.
+
+Pocket TTS accepts one complete text request at a time, up to 4,000 characters
+before and after normalization. Concurrent requests receive `busy`; streamed
+text is not supported, but PCM output is streamed.
 
 ## Audio and LVA
 
@@ -228,7 +237,8 @@ Update the model ID in Home Assistant as well.
 | Change | What to do |
 | --- | --- |
 | `ROUTER_MISS_LOGGING`, `ROUTER_MISS_UNTIL`, `ROUTER_VOCABULARY`, API key, metric labels | Restart only `qwen-ha-gateway.service` |
-| `AGENT_LANGUAGE` | Restart the gateway; install dependencies if the language is new to this deployment; match the HA pipeline language |
+| `AGENT_LANGUAGE` | Prepare the selected local assets, restart the gateway (install dependencies if needed), recreate the enabled local speech containers and match the language and voice in HA. |
+| `STT_PROMPT` | Recreate the local Whisper container so it receives the changed environment |
 | `CONTEXT_AUDIT`, `CONTEXT_CAPTURE`, `CONTEXT_CAPTURE_LIMIT` | Restart only the gateway |
 | `CACHE_POLICY`, `RESPONSE_STYLE`, `DECIDE_APPLY`, listener/counter settings | Re-run the gateway-only installer to regenerate its unit |
 | `STT_PROVIDER`, `TTS_PROVIDER` | Apply during a planned stack installation; external stages remain separately managed |

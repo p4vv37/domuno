@@ -20,7 +20,7 @@ marked `MISSING` is the one to fix.
 | Prompt counter | Set `GGUF` + `TOKENIZER`, or `COUNTER_URL`. The gateway will not start without one. |
 | `QAIRT` / `libQnnHtp.so` | Set `QNN_LIB_DIR` to the directory containing the HTP libraries. |
 | STT model/tokenizer | Run `./run.sh prepare` with `STT_PROVIDER=whisper-qnn`. |
-| TTS model/voice/Rust binary | Run `./run.sh prepare` with `TTS_PROVIDER=pocket-pl`. |
+| TTS model/voice/Rust binary | Run `./run.sh prepare` with `TTS_PROVIDER=pocket` and the intended `AGENT_LANGUAGE`. The bundled recipes use public downloads and do not require authentication. |
 | `PulseAudio/PipeWire` | Start the user audio server; check `/run/user/<uid>/pulse/native`. |
 | `paplay` / LVA volume library | Run `./run.sh prepare-audio` with the cue enabled. |
 
@@ -75,6 +75,11 @@ Usually one of:
 
 There is no CPU fallback. A failed HTP session fails instead of silently
 producing wrong transcripts.
+
+If Whisper is healthy but rejects the language or returns an empty transcript,
+match the HA STT language to `AGENT_LANGUAGE`, clear any custom `STT_PROMPT`, and
+[recreate the STT container](operations.md#stttts-images) to apply the change.
+`en` and `es` are configured offline; board validation for both is still open.
 
 ## Home Assistant cannot connect
 
@@ -151,8 +156,15 @@ The gateway does not append a JSON error to an SSE stream that already started.
 - **TTS silent:** check `docker logs --tail 100 tts-pocket-pl`; verify assets with
   `./run.sh check`; verify the LVA output device/sink. The TTS container produces
   PCM, LVA plays it.
-- **TTS starts late:** a short one-sentence answer may wait for the end of the
-  text stream before synthesis. First PCM is not speaker playback; see
+- **Wrong or missing voice after an upgrade or language change:** check
+  `AGENT_LANGUAGE`, prepare matching assets, and [force-recreate the local TTS
+  container](operations.md#stttts-images). Reload the Wyoming integration in HA,
+  match the Assist language, and select `shefowl` (`pl-PL`), `alba` (`en-US`), or
+  `lola` (`es-ES`).
+- **TTS reports `busy`:** only one request can synthesize at a time. Retry after
+  the active request finishes; the bridge does not queue concurrent requests.
+- **TTS starts late:** the bridge waits for complete text, then streams PCM. It
+  does not accept Wyoming streamed text. First PCM is not speaker playback; see
   [performance.md](performance.md#measuring-a-pipeline-run).
 
 ## A simple command goes to the LLM

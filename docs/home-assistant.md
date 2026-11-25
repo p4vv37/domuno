@@ -5,7 +5,7 @@ The board exposes four things to Home Assistant:
 | Purpose | Service | Port |
 | --- | --- | --- |
 | Speech to text | Whisper Large-v3-Turbo | `10301` |
-| Text to speech | Pocket TTS Polish (`shefowl`) | `10201` |
+| Text to speech | Pocket TTS (`pl`, `en`, `es`) | `10201` |
 | Conversation and tool calls | OpenAI-compatible gateway | `18191` |
 | Voice satellite | Linux Voice Assistant (ESPHome API) | `6053` |
 
@@ -22,7 +22,7 @@ The conversation integration is the one that usually needs a third-party compone
 
 - talk to an OpenAI-compatible **Chat Completions** endpoint (`/v1/chat/completions`),
 - send the HA tool schemas and the `role: tool` results,
-- support streaming if you want early TTS,
+- support the gateway's streamed chat responses (independent of TTS text input),
 - let you set a custom server URL and leave the API key empty.
 
 The official **OpenAI** integration does not support third-party endpoints, and
@@ -103,9 +103,22 @@ manually with the host and port above. The STT integration may still be named
 `whisper-small-qnn-arduino` for compatibility; the loaded artifact is the
 Large-v3-Turbo model.
 
-For TTS, the advertised program is `pocket-tts-pl`, the voice is `shefowl`, and
-the language is `pl`. You select the voice in the Assist pipeline, not in the
-Wyoming integration itself.
+Whisper and Pocket TTS each advertise one language per instance. Match the
+Assist pipeline to `AGENT_LANGUAGE` and select the voice in Assist, not in the
+Wyoming integration:
+
+| `AGENT_LANGUAGE` | Pocket TTS voice | Locale |
+| --- | --- | --- |
+| `pl` | `shefowl` | `pl-PL` |
+| `en` | `alba` | `en-US` |
+| `es` | `lola` | `es-ES` |
+
+After an upgrade or language change, reload the Wyoming integrations to refresh
+advertised languages and voices, then reselect the voice if needed. The Polish
+voice advertises `pl-PL`, not `pl`. The bridge accepts complete text only and
+streams PCM audio back; overlapping requests receive `busy`. Local TTS was
+verified on VENTUNO Q for all three languages, but the full English and Spanish
+Assist pipelines have not yet been tested end to end.
 
 ## 3. Add the LVA satellite
 
@@ -122,10 +135,11 @@ can also add it by host and port.
 ## 4. Create the Assist pipeline
 
 1. Go to **Settings → Voice assistants → Add assistant**.
-2. Set the language to **Polish**.
+2. Set the language to match `AGENT_LANGUAGE`: **Polish**, **English**, or **Spanish**.
 3. Select the conversation agent you created above.
 4. Select the Whisper STT entity.
-5. Select the Pocket TTS entity and voice `shefowl`.
+5. Select the Pocket TTS entity and the matching voice (`shefowl`, `alba`, or
+   `lola` respectively).
 6. Enable **Prefer local intents** so HA handles simple commands before sending
    them to the LLM.
 7. Assign this assistant to the LVA satellite. The exact label depends on the
@@ -134,6 +148,26 @@ can also add it by host and port.
 <p align="center">
   <img src="images/ha-assistant-config.jpg" alt="Assist pipeline: Polish STT, Local OpenAI agent and Pocket TTS voice shefowl" width="55%">
 </p>
+
+### Spanish example
+
+Edit the existing settings in `.env`:
+
+```dotenv
+AGENT_LANGUAGE=es
+STT_PROVIDER=whisper-qnn
+STT_PROMPT=""
+TTS_PROVIDER=pocket
+```
+
+1. [Prepare the Spanish Pocket TTS assets](configuration.md#preparing-local-pocket-tts),
+   then start the stack, or follow the
+   [speech migration steps](operations.md#speech-migration-checks) for an existing deployment.
+2. Add or refresh the Whisper and Pocket TTS Wyoming integrations on ports
+   `10301` and `10201`, respectively.
+3. In **Settings → Voice assistants**, select **Spanish**, the Domuno conversation
+   agent, Whisper for STT, and Pocket TTS with voice `lola` (`es-ES`). Try
+   “Enciende la luz de la cocina” if the kitchen light is exposed to Assist.
 
 ### Expose only the entities you need
 
@@ -179,8 +213,8 @@ the gateway is not an Ollama server.
 **STT and TTS.** You can use any Home Assistant STT/TTS integration instead of the
 local Wyoming services. Set `STT_PROVIDER=external` and/or
 `TTS_PROVIDER=external`, choose the integration in the Assist pipeline, and make
-sure its language matches the pipeline. The local Whisper and Pocket TTS recipes
-in this repository are Polish-only.
+sure its language matches the pipeline. Domuno does not install or configure
+an external provider, which can be local (for example, Piper) or cloud-hosted.
 
 **Satellite.** LVA is optional as a component: the gateway, STT and TTS can serve
 any HA satellite or the HA app. If you use another satellite, skip the ESPHome

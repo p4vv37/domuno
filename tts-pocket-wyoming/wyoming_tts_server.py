@@ -1,466 +1,416 @@
 #!/usr/bin/env python3
-"""
-Wyoming Protocol TTS Server for Pocket-TTS
+"""Independent Wyoming bridge for the official Kyutai Pocket TTS server.
 
-Implements Wyoming protocol TTS server that wraps pocket-tts,
-exposing available voices to Home Assistant for selection.
+The model and Rust runtime stay in their own processes. This file only translates
+Wyoming synthesis requests to the official ``POST /tts`` endpoint and translates
+the streamed WAV response back to Wyoming PCM events.
 """
+from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import aclosing, suppress
+from dataclasses import dataclass
 import logging
-import time
-import math
-from functools import partial
-from typing import Optional
+import os
+from pathlib import Path
+import signal
+import struct
+import sys
+from typing import AsyncIterator, Optional
 
-import numpy
-from rust_tts_backend import split_ready_text
-
-from tts_render_worker import RenderBusy, RenderWorker, RequestMetrics, PCMStream, StreamCancelled, TextStream
-
-# Polish fine-tune (shefowl/pocket-tts-polish-6l) has a single reference voice.
-# Map voice name -> audio prompt (reference.wav ships in the model repo).
-PREDEFINED_VOICE_NAMES = {
-    "shefowl": "hf://shefowl/pocket-tts-polish-6l/reference.wav",
-}
+import aiohttp
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.error import Error
-from wyoming.event import Event
+from wyoming.event import async_read_event
 from wyoming.info import Attribution, Describe, Info, TtsProgram, TtsVoice
 from wyoming.server import AsyncEventHandler, AsyncServer
-from wyoming.tts import (
-    Synthesize,
-    SynthesizeChunk,
-    SynthesizeStart,
-    SynthesizeStop,
-    SynthesizeStopped,
-)
+from wyoming.tts import Synthesize, SynthesizeChunk, SynthesizeStart, SynthesizeStop
 
-_LOGGER = logging.getLogger(__name__)
+from text_normalization import normalize_pl_numbers
 
-# Prefix trimming (seconds). These are measured service constants, not deployment
-# knobs: the tests inject shorter values into their synthetic namespace.
-PREFIX_MIN_DURATION = 0.15   # minimum time before looking for the pause
-PREFIX_MAX_DURATION = 1.0    # maximum time to search for the prefix end
-PREFIX_SILENCE_GAP = 0.08    # minimum silence gap after the "... " prefix
-
-_VOICE_STATES: dict[str, dict] = {}
+_LOGGER = logging.getLogger('domuno-tts')
+_MAX_HEADER = 1 << 20
+_MAX_TEXT_CHARS = 4_000
+_MAX_PCM_BYTES = 16 << 20
+_CHUNK_MS = 20
+_KYUTAI_WEIGHTS = 'https://huggingface.co/kyutai/pocket-tts-without-voice-cloning'
+_VOICES = {
+    'pl': ('shefowl', 'pl-PL', 'shefowl', 'https://huggingface.co/shefowl/pocket-tts-polish-6l'),
+    'en': ('alba', 'en-US', 'Kyutai', _KYUTAI_WEIGHTS),
+    'es': ('lola', 'es-ES', 'Kyutai', _KYUTAI_WEIGHTS),
+}
 
 
-class PocketTTSEventHandler(AsyncEventHandler):
-    """Event handler for Pocket-TTS Wyoming server."""
+class BackendError(RuntimeError):
+    """The official TTS backend could not produce a complete response."""
 
-    def __init__(
-        self,
-        wyoming_info: Info,
-        cli_args: argparse.Namespace,
-        tts_model: "TTSModel",
-        render_worker: RenderWorker,
-        *args,
-        **kwargs,
-    ) -> None:
-        super().__init__(*args, **kwargs)
 
-        self.cli_args = cli_args
-        self.wyoming_info_event = wyoming_info.event()
-        self.tts_model = tts_model
-        self.render_worker = render_worker
-        self.is_streaming: Optional[bool] = None
-        self._synthesize: Optional[Synthesize] = None
-        self._stream_text: str = ""
-        self._stream_chars = 0
-        self._text_source = None
-        self._stream_task = None
-        self._stream_metrics = None
+class BackendBusy(BackendError):
+    """The single synthesis slot is already in use."""
 
-    async def handle_event(self, event: Event) -> bool:
-        """Handle incoming Wyoming protocol events."""
-        if Describe.is_type(event.type):
-            await self.write_event(self.wyoming_info_event)
-            _LOGGER.debug("Sent info")
-            return True
 
+@dataclass(frozen=True)
+class WavFormat:
+    rate: int
+    width: int
+    channels: int
+
+    @property
+    def frame_bytes(self) -> int:
+        return self.width * self.channels
+
+
+def parse_wav_header(data: bytes) -> Optional[tuple[WavFormat, int]]:
+    """Return the PCM format and first data byte, or None while incomplete."""
+    if len(data) < 12:
+        return None
+    if data[:4] != b'RIFF' or data[8:12] != b'WAVE':
+        raise BackendError('backend did not return a RIFF/WAVE stream')
+    fmt = None
+    offset = 12
+    while True:
+        if offset + 8 > len(data):
+            return None
+        chunk_id = data[offset:offset + 4]
+        size = int.from_bytes(data[offset + 4:offset + 8], 'little')
+        if chunk_id == b'fmt ':
+            end = offset + 8 + size
+            if len(data) < end:
+                return None
+            if size < 16:
+                raise BackendError('backend WAV format chunk is too short')
+            audio_format, channels, rate, byte_rate, block_align, bits = struct.unpack_from(
+                '<HHIIHH', data, offset + 8)
+            if audio_format != 1:
+                raise BackendError('backend WAV is not uncompressed PCM')
+            if channels != 1 or not 8_000 <= rate <= 48_000 or bits != 16:
+                raise BackendError('unsupported backend WAV format')
+            if block_align != 2 or byte_rate != rate * block_align:
+                raise BackendError('backend WAV block alignment is invalid')
+            fmt = WavFormat(rate=rate, width=bits // 8, channels=channels)
+            offset = end + (size & 1)
+        elif chunk_id == b'data':
+            if fmt is None:
+                raise BackendError('backend WAV data appears before its format')
+            # Kyutai uses a deliberately huge placeholder data size. Ignore it
+            # and read PCM until HTTP EOF.
+            if offset + 8 > _MAX_HEADER:
+                raise BackendError('backend WAV header is too large')
+            return fmt, offset + 8
+        else:
+            if size > _MAX_HEADER:
+                raise BackendError('backend WAV header is too large')
+            end = offset + 8 + size + (size & 1)
+            if len(data) < end:
+                return None
+            offset = end
+
+
+class PocketBackend:
+    """Minimal async client for the official Pocket TTS HTTP server."""
+
+    def __init__(self, url: str, timeout: float = 300.0):
+        self._tts_url = url.rstrip('/') + '/tts'
+        self._health_url = url.rstrip('/') + '/health'
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=timeout, sock_connect=10, sock_read=timeout))
+        self._lock = asyncio.Lock()
+
+    async def close(self):
+        await self._session.close()
+
+    async def healthy(self) -> bool:
         try:
-            if Synthesize.is_type(event.type):
-                if self.is_streaming:
-                    # Ignore since this is only sent for compatibility reasons.
-                    # For streaming, we expect:
-                    # [synthesize-start] -> [synthesize-chunk]+ -> [synthesize]? -> [synthesize-stop]
-                    return True
-
-                synthesize = Synthesize.from_event(event)
-                return await self._handle_synthesize(synthesize, send_start=True, send_stop=True)
-
-            if SynthesizeStart.is_type(event.type):
-                if self.is_streaming:
-                    raise ValueError('TTS text stream already started')
-                stream_start = SynthesizeStart.from_event(event)
-                self.is_streaming = True
-                self._stream_text = ''
-                self._stream_chars = 0
-                self._text_source = TextStream()
-                self._stream_task = None
-                self._stream_metrics = RequestMetrics()
-                self._stream_metrics.mark('request_received')
-                self._stream_metrics.mark('text_stream_start')
-                self._synthesize = Synthesize(text='', voice=stream_start.voice)
-                return True
-
-            if SynthesizeChunk.is_type(event.type):
-                if not self.is_streaming or self._synthesize is None:
-                    raise ValueError('Send synthesize-start before text chunks')
-                chunk = SynthesizeChunk.from_event(event).text
-                self._stream_chars += len(chunk)
-                if self._stream_chars > getattr(self.cli_args, 'pcm_max_text', 2048) - 4:
-                    raise ValueError('TTS text exceeds streaming limit')
-                self._stream_metrics.mark('first_text_chunk')
-                self._stream_text += chunk
-                ready, self._stream_text = split_ready_text(self._stream_text)
-                for sentence in ready:
-                    self._text_source.send(sentence)
-                if ready:
-                    self._stream_metrics.mark('first_sentence_ready')
-                    self._start_text_render()
-                if self._stream_task is not None and self._stream_task.done():
-                    if not self._stream_task.result():
-                        return False
-                return True
-
-            if SynthesizeStop.is_type(event.type):
-                if not self.is_streaming or self._synthesize is None:
-                    raise ValueError('TTS text stream not started')
-                self._stream_metrics.mark('text_stream_stop')
-                if self._stream_text.strip():
-                    self._text_source.send(self._stream_text)
-                    self._stream_metrics.mark('first_sentence_ready')
-                    self._start_text_render()
-                self._text_source.finish()
-                if self._stream_task is not None:
-                    if not await self._stream_task:
-                        return False
-                else:
-                    self._stream_metrics.mark('request_empty')
-                await self.write_event(SynthesizeStopped().event())
-                self.is_streaming = False
-                self._stream_text = ''
-                self._synthesize = None
-                self._stream_task = None
-                self._text_source = None
-                return True
-
-            return True
-        except Exception as err:
-            metrics = getattr(self, '_stream_metrics', None)
-            if metrics is not None:
-                metrics.mark('request_failed')
-            self.is_streaming = False
-            await self.disconnect()
-            await self.write_event(
-                Error(text=str(err), code=err.__class__.__name__).event()
-            )
-            raise err
-
-    def _start_text_render(self):
-        if self._stream_task is None:
-            self._stream_task = asyncio.create_task(self._handle_synthesize(
-                self._synthesize, text_source=self._text_source, metrics=self._stream_metrics))
-
-    async def disconnect(self):
-        metrics = getattr(self, '_stream_metrics', None)
-        if self.is_streaming and metrics is not None:
-            metrics.mark('request_cancelled')
-        source = getattr(self, '_text_source', None)
-        if source is not None:
-            source.cancel()
-        task = getattr(self, '_stream_task', None)
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        self.is_streaming = False
-        self._stream_text = ''
-        self._synthesize = None
-        self._text_source = None
-        self._stream_task = None
-
-    async def _handle_synthesize(
-        self, synthesize: Synthesize, send_start: bool = True, send_stop: bool = True,
-        text_source=None, metrics=None
-    ) -> bool:
-        """Handle synthesis request."""
-
-        metrics = metrics or RequestMetrics()
-        metrics.mark('request_received')
-        raw_text = synthesize.text
-        if (getattr(self.cli_args, 'pcm_streaming', False) and
-                len(raw_text) > getattr(self.cli_args, 'pcm_max_text', 2048) - 4):
-            metrics.mark('request_failed')
-            await self.write_event(Error(text='TTS text exceeds streaming limit', code='TextTooLong').event())
+            async with self._session.get(self._health_url, timeout=aiohttp.ClientTimeout(total=3)) as response:
+                return response.status == 200
+        except (aiohttp.ClientError, asyncio.TimeoutError):
             return False
-        text = " ".join(raw_text.strip().splitlines())
 
-        if not text and text_source is None:
-            metrics.mark('request_empty')
-            _LOGGER.warning("Empty text received")
-            if send_stop:
-                await self.write_event(AudioStop().event())
-            return True
+    async def synthesize(self, text: str) -> AsyncIterator[AudioStart | AudioChunk]:
+        """Yield the audio stream; no successful terminator is implied here."""
+        # No await between checking and taking an unlocked asyncio.Lock.
+        if self._lock.locked():
+            raise BackendBusy()
+        async with self._lock:
+            try:
+                async with self._session.post(self._tts_url, data={'text': text}) as response:
+                    if response.status != 200:
+                        raise BackendError(f'backend returned HTTP {response.status}')
+                    if response.content_type != 'audio/wav':
+                        raise BackendError('backend did not return audio/wav')
+                    header = bytearray()
+                    pcm = bytearray()
+                    fmt: Optional[WavFormat] = None
+                    chunk_bytes = 0
+                    pcm_seen = 0
+                    async for raw in response.content.iter_any():
+                        if fmt is None:
+                            header.extend(raw)
+                            parsed = parse_wav_header(bytes(header))
+                            if parsed is None:
+                                if len(header) > _MAX_HEADER:
+                                    raise BackendError('backend WAV header is too large')
+                                continue
+                            fmt, offset = parsed
+                            chunk_bytes = max(fmt.frame_bytes,
+                                              (fmt.rate * _CHUNK_MS // 1000) * fmt.frame_bytes)
+                            pcm.extend(header[offset:])
+                            pcm_seen += len(header) - offset
+                            header.clear()
+                            yield AudioStart(rate=fmt.rate, width=fmt.width,
+                                             channels=fmt.channels)
+                        else:
+                            pcm.extend(raw)
+                            pcm_seen += len(raw)
+                        if pcm_seen > _MAX_PCM_BYTES:
+                            raise BackendError('backend audio exceeded the size limit')
+                        while len(pcm) >= chunk_bytes:
+                            chunk = bytes(pcm[:chunk_bytes])
+                            del pcm[:chunk_bytes]
+                            yield AudioChunk(rate=fmt.rate, width=fmt.width,
+                                             channels=fmt.channels, audio=chunk)
+                    if fmt is None:
+                        raise BackendError('backend WAV is incomplete')
+                    if pcm_seen == 0:
+                        raise BackendError('backend returned no audio')
+                    if len(pcm) % fmt.frame_bytes:
+                        raise BackendError('backend returned a partial PCM frame')
+                    if pcm:
+                        yield AudioChunk(rate=fmt.rate, width=fmt.width,
+                                         channels=fmt.channels, audio=bytes(pcm))
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                raise BackendError(f'backend connection failed: {type(exc).__name__}') from exc
 
 
-        # Add a sacrificial prefix to prevent the first word from being swallowed
-        # by the voice prompt "blend region". This prefix audio will be trimmed later.
-        text = text_source if text_source is not None else "... " + text
+class Handler(AsyncEventHandler):
+    def __init__(self, reader, writer, backend: PocketBackend, info: Info, language: str = 'pl'):
+        super().__init__(reader, writer)
+        self.backend = backend
+        self.info = info
+        self.language = language
 
-        voice_name: Optional[str] = None
-
-        if synthesize.voice is not None:
-            voice_name = synthesize.voice.name
-
-        if voice_name is None:
-            voice_name = self.cli_args.voice
-
-        # Extract voice name from model name if it's in format "pocket-tts-{voice}"
-        if voice_name and voice_name.startswith("pocket-tts-"):
-            voice_name = voice_name.replace("pocket-tts-", "", 1)
-
-        if voice_name not in PREDEFINED_VOICE_NAMES:
-            _LOGGER.warning(
-                "Voice '%s' not found, using default '%s'", voice_name, self.cli_args.voice
-            )
-            voice_name = self.cli_args.voice
-
-        assert voice_name is not None
-
-        return await self._handle_pcm_stream(voice_name, text, metrics, send_start, send_stop)
-
-    async def _handle_pcm_stream(self, voice, text, metrics, send_start, send_stop):
-        if isinstance(text, str) and len(text) > getattr(self.cli_args, 'pcm_max_text', 2048):
-            await self.write_event(Error(text="TTS text exceeds streaming limit", code="TextTooLong").event())
-            return False
-        stream = PCMStream(asyncio.get_running_loop())
+    async def run(self) -> None:
+        # Keep reading while rendering: Wyoming's default loop waits for the
+        # handler and cannot see a disconnect if the backend stops sending PCM.
+        incoming = asyncio.create_task(async_read_event(self.reader))
+        render = None
         try:
-            job = self.render_worker.submit(self._produce_pcm, voice, text, metrics, stream)
-        except RenderBusy:
-            metrics.mark('request_busy')
-            await self.write_event(Error(text="TTS engine is busy", code="ServerBusy").event())
-            return False
-        job.add_done_callback(stream.notify)
-        sent = False
-        try:
-            if send_start:
-                await self.write_event(AudioStart(rate=self.tts_model.sample_rate, width=2, channels=1).event())
-            while True:
-                data = await stream.read(job)
-                if data is None: break
-                await self.write_event(AudioChunk(audio=data, rate=self.tts_model.sample_rate, width=2, channels=1).event())
-                sent = True
-                metrics.mark('first_pcm_send_complete')
-            if not sent:
-                raise ValueError('Model produced no deliverable PCM')
-            metrics.mark('pcm_delivery_complete')
-            if send_stop: await self.write_event(AudioStop().event())
-            metrics.mark('request_complete')
-        except asyncio.CancelledError:
-            stream.cancel()
-            metrics.mark('request_cancelled_pending' if job.cancel() else 'request_cancelled_running_or_done')
-            raise
-        except Exception:
-            stream.cancel(); job.cancel()
-            metrics.mark('request_failed')
-            await self.write_event(Error(text="TTS synthesis failed", code="SynthesisError").event())
-            return False
+            while (event := await incoming) is not None:
+                if not Synthesize.is_type(event.type):
+                    if not await self.handle_event(event):
+                        return
+                    incoming = asyncio.create_task(async_read_event(self.reader))
+                    continue
+                render = asyncio.create_task(self.handle_event(event))
+                incoming = asyncio.create_task(async_read_event(self.reader))
+                done, _ = await asyncio.wait((render, incoming),
+                                             return_when=asyncio.FIRST_COMPLETED)
+                if incoming in done and incoming.result() is None:
+                    return
+                if not await render:
+                    return
+                render = None
+        except OSError:
+            # A reset may surface on either the read or the write side.
+            pass
         finally:
-            stream.cancel()
-            if isinstance(text, TextStream):
-                text.cancel()
-            def consume(future):
-                if not future.cancelled(): future.exception()
-            job.add_done_callback(consume)
+            tasks = [task for task in (incoming, render) if task is not None]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self.writer.close()
+
+    async def handle_event(self, event) -> bool:
+        if Describe.is_type(event.type):
+            await self.write_event(self.info.event())
+            return True
+        if SynthesizeStart.is_type(event.type) or SynthesizeChunk.is_type(event.type) \
+                or SynthesizeStop.is_type(event.type):
+            await self.write_event(Error(
+                text='Streaming text input is not supported',
+                code='streaming-not-supported').event())
+            return True
+        if not Synthesize.is_type(event.type):
+            return False
+        try:
+            request = Synthesize.from_event(event)
+            if not isinstance(request.text, str):
+                raise TypeError
+        except (KeyError, TypeError, ValueError):
+            await self.write_event(Error(text='Invalid synthesis request',
+                                         code='invalid-request').event())
+            return True
+        text = request.text.strip()
+        if not text:
+            await self.write_event(Error(text='Text is empty', code='invalid-text').event())
+            return True
+        if len(request.text) > _MAX_TEXT_CHARS:
+            await self.write_event(Error(text=f'Text exceeds {_MAX_TEXT_CHARS} characters',
+                                         code='text-too-long').event())
+            return True
+        try:
+            if self.language == 'pl':
+                text = normalize_pl_numbers(text)
+            if len(text) > _MAX_TEXT_CHARS:
+                await self.write_event(Error(text=f'Normalized text exceeds {_MAX_TEXT_CHARS} characters',
+                                             code='text-too-long').event())
+                return True
+            async with aclosing(self.backend.synthesize(text)) as stream:
+                async for audio in stream:
+                    await self.write_event(audio.event())
+            await self.write_event(AudioStop().event())
+        except OSError:
+            return False
+        except BackendBusy:
+            await self.write_event(Error(text='TTS is busy; retry later', code='busy').event())
+        except Exception as exc:
+            _LOGGER.warning('TTS synthesis failed: %s', type(exc).__name__)
+            await self.write_event(Error(text='Speech synthesis failed',
+                                         code='synthesis-failed').event())
         return True
 
-    def _produce_pcm(self, voice, text, metrics, stream):
-        metrics.mark('render_start')
-        remaining = int(self.tts_model.sample_rate * getattr(self.cli_args, 'pcm_max_seconds', 120))
-        deadline = time.monotonic() + 130
-        try:
-            for sentence in ([text] if isinstance(text, str) else text):
-                if stream.stopped.is_set():
-                    raise StreamCancelled()
-                if not sentence.startswith('... '):
-                    sentence = '... ' + sentence
-                remaining -= self._produce_segment(voice, sentence, metrics, stream, remaining, deadline)
-        except StreamCancelled:
-            metrics.mark('render_cancelled')
+
+def make_info(voice: str, version: str, language: str = 'pl') -> Info:
+    _, locale, creator, model_url = _VOICES[language]
+    program_attribution = Attribution(
+        name='Kyutai Pocket TTS',
+        url='https://github.com/kyutai-labs/pocket-tts')
+    return Info(tts=[TtsProgram(
+        name=f'pocket-tts-{language}',
+        description='Pocket TTS / official Kyutai Rust',
+        attribution=program_attribution,
+        installed=True,
+        version=version,
+        voices=[TtsVoice(
+            name=voice,
+            description=f'Pocket TTS ({locale})',
+            attribution=Attribution(name=creator, url=model_url),
+            installed=True,
+            version=version,
+            languages=[locale])],
+        supports_synthesize_streaming=False)])
+
+
+async def start_rust_backend(binary: str, config: str, voice: str, port: int):
+    command = [binary, 'serve', '--host', '127.0.0.1', '--port', str(port),
+               '--config', config, '--default-voice', voice, '--quantize']
+    return await asyncio.create_subprocess_exec(
+        *command, env={**os.environ, 'RAYON_NUM_THREADS': '1'},
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL)
+
+
+async def wait_ready(backend: PocketBackend, process, timeout: float):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if process.returncode is not None:
+            raise BackendError('backend process exited during startup')
+        if await backend.healthy():
             return
-        except BaseException:
-            metrics.mark('render_failed')
-            raise
-        finally:
-            metrics.mark('render_closed')
-        metrics.mark('render_done')
+        await asyncio.sleep(1)
+    raise BackendError('backend did not become ready')
 
-    def _produce_segment(self, voice, text, metrics, stream, limit, deadline):
-        generator = None
+
+async def stop_rust_backend(process, timeout=5):
+    if process.returncode is None:
+        with suppress(ProcessLookupError):
+            process.terminate()
         try:
-            if voice not in _VOICE_STATES:
-                _VOICE_STATES[voice] = self.tts_model.get_state_for_audio_prompt(getattr(self.tts_model, 'reference', None) or PREDEFINED_VOICE_NAMES[voice])
-            rate = self.tts_model.sample_rate
-            target = max(int(rate * getattr(self.cli_args, 'pcm_buffer_seconds', 2)), int(rate * PREFIX_MAX_DURATION), 1)
-            arrays = []; total = 0; incremental = None; tail = numpy.empty(0, dtype=numpy.float32)
-            peak = 0.; padding = int(rate * .05); onset = True
-            began = time.monotonic()
-            generator = self.tts_model.generate_audio_stream(model_state=_VOICE_STATES[voice], text_to_generate=text, copy_state=True)
-            for chunk in generator:
-                if time.monotonic() > deadline: raise TimeoutError('TTS generation timed out')
-                if stream.stopped.is_set(): raise StreamCancelled()
-                a = numpy.asarray(chunk.detach().cpu().numpy(), dtype=numpy.float32)
-                if a.ndim != 1 or not numpy.isfinite(a).all(): raise ValueError('Invalid model PCM')
-                total += len(a)
-                if total > limit: raise ValueError('Model PCM exceeds limit')
-                if not len(a): continue
-                if incremental is not True:
-                    arrays.append(a)
-                    if incremental is False or total < target: continue
-                    incremental = (getattr(self.cli_args, 'pcm_allow_slow', False) or (time.monotonic()-began)/(total/rate) <= .9)
-                    if not incremental:
-                        metrics.mark('pcm_slow_fallback'); continue
-                    metrics.mark('pcm_incremental_start')
-                    a = numpy.concatenate(arrays); arrays = []
-                peak = max(peak, float(numpy.abs(a).max()))
-                threshold = max(peak * .01, 1e-8)
-                if onset:
-                    indices = numpy.where(numpy.abs(a) > threshold)[0]
-                    if not len(indices): continue
-                    a = a[max(0, int(indices[0])-padding):]; onset = False
-                tail = numpy.concatenate((tail, a))
-                indices = numpy.where(numpy.abs(tail) > threshold)[0]
-                cut = min(max(0, len(tail)-padding), int(indices[-1])+1) if len(indices) else 0
-                if cut:
-                    data = (tail[:cut].clip(-1., 1.)*32767).astype('<i2').tobytes()
-                    metrics.mark('first_incremental_pcm_ready'); stream.send(data)
-                    tail = tail[cut:]
-            if incremental is True:
-                # A peak-relative silence threshold cannot distinguish a quiet
-                # final sentence from silence. At EOF retain every sample that
-                # survives PCM quantization; trim only actual PCM-zero suffix.
-                pcm_tail = (tail.clip(-1., 1.)*32767).astype('<i2')
-                indices = numpy.flatnonzero(pcm_tail)
-                if len(indices):
-                    pcm_tail = pcm_tail[:int(indices[-1])+padding+1]
-                elif len(pcm_tail) > padding: pcm_tail = pcm_tail[:padding]
-                if len(pcm_tail): stream.send(pcm_tail.tobytes())
-            elif arrays:
-                stream.send(self._finish_pcm_arrays(arrays, voice, metrics))
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            with suppress(ProcessLookupError):
+                process.kill()
+    await process.wait()
+
+
+async def run(args):
+    backend = PocketBackend(args.backend_url or f'http://127.0.0.1:{args.backend_port}')
+    process = None
+    tasks = set()
+    server = None
+    loop = asyncio.get_running_loop()
+    signals = []
+    try:
+        if args.backend_binary:
+            process = await start_rust_backend(
+                args.backend_binary, args.config, args.backend_voice or args.voice,
+                args.backend_port)
+            await wait_ready(backend, process, args.startup_timeout)
+        info = make_info(args.voice, args.version, args.language)
+        server = AsyncServer.from_uri(f'tcp://{args.host}:{args.port}')
+        task = asyncio.create_task(server.run(
+            lambda reader, writer: Handler(reader, writer, backend, info, args.language)))
+        tasks.add(task)
+        stop = asyncio.Event()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with suppress(NotImplementedError):
+                loop.add_signal_handler(sig, stop.set)
+                signals.append(sig)
+        stop_task = asyncio.create_task(stop.wait())
+        tasks.add(stop_task)
+        child_task = asyncio.create_task(process.wait()) if process is not None else None
+        if child_task is not None:
+            tasks.add(child_task)
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        if task in done:
+            task.result()  # Surface bind failures instead of leaving them unobserved.
+        if child_task in done and stop_task not in done:
+            raise BackendError(f'backend exited unexpectedly (status {child_task.result()})')
+    finally:
+        for sig in signals:
+            loop.remove_signal_handler(sig)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            if server is not None:
+                await server.stop()
         finally:
-            if generator is not None and hasattr(generator, 'close'):
-                generator.close()
-        return total
-
-    def _finish_pcm_arrays(self, all_audio_arrays, voice_name, metrics):
-        sample_rate = self.tts_model.sample_rate
-        width, channels = 2, 1
-        full_audio = numpy.concatenate(all_audio_arrays)
-
-        # Find and remove the sacrificial prefix ("...") by detecting the pause after it
-        # This adapts to different voice speeds rather than using a fixed duration
-        silence_threshold = 0.01
-        max_amplitude = numpy.abs(full_audio).max()
-        threshold = max_amplitude * silence_threshold
-
-        # Minimum time before we start looking for the pause (avoid false early detection)
-        min_prefix_samples = int(sample_rate * PREFIX_MIN_DURATION)
-        # Maximum time to search for the prefix end
-        max_prefix_samples = int(sample_rate * PREFIX_MAX_DURATION)
-        # Minimum silence duration to consider it the gap after "..."
-        min_silence_samples = int(sample_rate * PREFIX_SILENCE_GAP)
-
-        # Find where the prefix ends by looking for a silence gap
-        prefix_end = 0
-        if len(full_audio) > min_prefix_samples:
-            search_end = min(len(full_audio), max_prefix_samples)
-            is_silent = numpy.abs(full_audio[:search_end]) < threshold
-
-            # Look for a silence gap after the minimum prefix duration
-            i = min_prefix_samples
-            while i < search_end:
-                if is_silent[i]:
-                    # Found start of silence, check if it's long enough
-                    silence_start = i
-                    while i < search_end and is_silent[i]:
-                        i += 1
-                    silence_length = i - silence_start
-                    if silence_length >= min_silence_samples:
-                        # Found the gap after the prefix - start after this silence
-                        prefix_end = i
-                        break
-                else:
-                    i += 1
-
-        if prefix_end > 0:
-            _LOGGER.debug("Trimming prefix: %d samples (%.3fs)",
-                          prefix_end, prefix_end / sample_rate)
-            full_audio = full_audio[prefix_end:]
-
-        # Trim any remaining leading silence
-        non_silent_indices = numpy.where(numpy.abs(full_audio) > threshold)[0]
-        if len(non_silent_indices) > 0:
-            padding_samples = int(sample_rate * 0.05)  # 50ms padding
-            first_non_silent = max(0, non_silent_indices[0] - padding_samples)
-            full_audio = full_audio[first_non_silent:]
-
-        # Preserve quiet speech in the full-buffer path too. Only PCM zeros
-        # are removable at the end, not samples below a peak-relative threshold.
-        full_audio = (full_audio.clip(-1.0, 1.0) * 32767).astype('<i2')
-        audible = numpy.flatnonzero(full_audio)
-        if len(audible):
-            full_audio = full_audio[:int(audible[-1]) + int(sample_rate * .05) + 1]
-        audio_bytes = full_audio.tobytes()
-        if audio_bytes:
-            # Full buffering + trimming: first deliverable PCM exists only now.
-            # This is not model-stream TTFT or speaker playback latency.
-            metrics.mark('first_pcm_ready')
-
-        return audio_bytes
+            try:
+                await backend.close()
+            finally:
+                if process is not None:
+                    await stop_rust_backend(process)
 
 
-async def main():
-    from rust_tts_backend import RustTTSModel
-    parser = argparse.ArgumentParser(description='Polish Pocket TTS over Wyoming')
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=10201)
-    parser.add_argument('--pcm-buffer-seconds', type=float, default=2)
-    args = parser.parse_args()
-    if not math.isfinite(args.pcm_buffer_seconds) or not .02 <= args.pcm_buffer_seconds <= 30:
-        parser.error('PCM buffer must be between 0.02 and 30 seconds')
-    args.voice = 'shefowl'
-    args.pcm_streaming = True
-    args.pcm_allow_slow = False
-    args.pcm_max_text = 2048
-    args.pcm_max_seconds = 120
-    logging.basicConfig(level=logging.INFO)
-    model = RustTTSModel.from_environment()
-    worker = RenderWorker()
-    server = None
+    parser.add_argument('--backend-url', help='Defaults to loopback on --backend-port')
+    parser.add_argument('--backend-binary', default=os.environ.get('POCKET_TTS_BACKEND_BINARY', ''))
+    parser.add_argument('--backend-port', type=int, default=18080)
+    parser.add_argument('--language', choices=tuple(_VOICES),
+                        default=os.environ.get('AGENT_LANGUAGE') or 'pl')
+    parser.add_argument('--assets-dir', type=Path, default=Path('/assets'))
+    parser.add_argument('--config', default=os.environ.get('POCKET_TTS_CONFIG'))
+    parser.add_argument('--voice', default=os.environ.get('POCKET_TTS_VOICE'))
+    parser.add_argument('--backend-voice', default=os.environ.get('POCKET_TTS_BACKEND_VOICE'))
+    parser.add_argument('--version', default=os.environ.get('POCKET_TTS_VERSION', 'kyutai-v4.0.1'))
+    parser.add_argument('--startup-timeout', type=float, default=120)
+    args = parser.parse_args(argv)
+    if args.language not in _VOICES:
+        parser.error('AGENT_LANGUAGE must be pl, en or es')
+    profile = args.assets_dir if args.language == 'pl' else args.assets_dir / args.language
+    args.config = args.config or str(profile / 'config.yaml')
+    args.voice = args.voice or _VOICES[args.language][0]
+    reference = 'reference.wav' if args.language == 'pl' else 'reference.safetensors'
+    args.backend_voice = args.backend_voice or str(profile / reference)
+    return args
+
+
+def main():
+    args = parse_args()
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s: %(message)s')
     try:
-        _VOICE_STATES['shefowl'] = model.get_state_for_audio_prompt(model.reference)
-        attribution = Attribution(name='shefowl', url='https://huggingface.co/shefowl/pocket-tts-polish-6l')
-        voice = TtsVoice(name='shefowl', description='Polish reference voice', attribution=attribution,
-                         installed=True, version=None, languages=['pl'], speakers=None)
-        info = Info(tts=[TtsProgram(name='pocket-tts-pl', description='Pocket TTS Polish / Rust CPU',
-                                   attribution=attribution, installed=True, voices=[voice], version='1.0.1',
-                                   supports_synthesize_streaming=True)])
-        server = AsyncServer.from_uri(f'tcp://{args.host}:{args.port}')
-        _LOGGER.info('Ready: Polish voice shefowl')
-        await server.run(partial(PocketTTSEventHandler, info, args, model, worker))
-    finally:
-        if server is not None:
-            await server.stop()
-        await asyncio.to_thread(worker.close)
-        await asyncio.to_thread(model.close)
+        asyncio.run(run(args))
+    except KeyboardInterrupt:
+        pass
+    except BackendError as exc:
+        print(f'TTS backend error: {exc}', file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    main()

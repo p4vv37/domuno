@@ -6,6 +6,8 @@ services:
     ports:
       - "10201:10201"
     restart: unless-stopped
+    environment:
+      AGENT_LANGUAGE: ${AGENT_LANGUAGE:-pl}
     volumes:
       - ./assets:/assets:ro
     logging:

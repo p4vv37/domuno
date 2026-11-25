@@ -5,7 +5,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location(
-    'number_backend', ROOT / 'tts-pocket-wyoming/rust_tts_backend.py')
+    'number_normalization', ROOT / 'tts-pocket-wyoming/text_normalization.py')
 backend = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(backend)
 
@@ -53,13 +53,6 @@ class NumberNormalizationTests(unittest.TestCase):
             backend.normalize_pl_numbers('O 21:05 było 2°C.'),
             'O 21:05 było dwa stopnie Celsjusza.')
 
-    def test_expanded_text_limit_applies_before_http(self):
-        try:
-            import numpy
-        except ImportError:
-            self.skipTest('NumPy unavailable')
-        model = backend.RustTTSModel(base_url='http://127.0.0.1:1')
-        with self.assertRaisesRegex(backend.RustBackendError, 'text exceeds'):
-            next(model.generate_audio_stream(text_to_generate='50 ' * 300))
-        self.assertTrue(model._admission.acquire(blocking=False))
-        model._admission.release()
+
+if __name__ == '__main__':
+    unittest.main()

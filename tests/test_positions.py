@@ -27,6 +27,21 @@ class PositionTests(unittest.TestCase):
                              position_tools() if available is None else available,
                              language=get_language(code), **kwargs)
 
+    def test_spanish_absolute_position(self):
+        decision = self.route('Abre la persiana en la cocina al 50 %.', code='es',
+                              rows=[('Persiana', 'cover', 'Cocina')])
+        self.assertEqual(decision.kind, router.DecisionKind.TOOLCALL)
+        self.assertEqual(decision.tool_call.name, 'intent__HassSetPosition')
+        self.assertEqual(decision.tool_call.arguments,
+                         {'name': 'Persiana', 'area': 'Cocina', 'domain': ['cover'], 'position': 50})
+
+    def test_on_or_off_does_not_turn_into_a_cover_position(self):
+        for text in ('Enciende la persiana al 50 %', 'Apaga la persiana al 50 %'):
+            with self.subTest(text=text):
+                decision = self.route(text, code='es', rows=[('Persiana', 'cover', None)])
+                self.assertEqual(decision.kind, router.DecisionKind.PASS)
+                self.assertIsNone(decision.tool_call)
+
     def test_polish_absolute_positions_and_context_selectors(self):
         for verb in ('Otwórz', 'Zamknij', 'Ustaw', 'Ustaw pozycję'):
             for value in (0, 50, 100):

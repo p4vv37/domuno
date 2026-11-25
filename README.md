@@ -19,7 +19,6 @@ no cloud API keys, no GPU machine running 24/7.
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue.svg">
   <img alt="Platform: ARM64" src="https://img.shields.io/badge/platform-ARM64-lightgrey.svg">
-  <img alt="Status: tested recipe" src="https://img.shields.io/badge/status-tested%20recipe-green.svg">
 </p>
 
 ## What this is
@@ -31,7 +30,7 @@ Arduino VENTUNO Q:
 | --- | --- | --- |
 | Speech to text | Whisper Large-v3-Turbo W8A16 | Hexagon NPU |
 | Conversation and tool calls | Qwen2.5-3B-Instruct Q4_0 via GenieX | Hexagon NPU |
-| Text to speech | Pocket TTS Polish (6L, Rust runtime) | CPU |
+| Text to speech | Pocket TTS (`pl`, `en`, `es`) | CPU |
 | Wake word, microphone, playback | Linux Voice Assistant 1.1.18 | CPU / USB audio |
 
 Home Assistant orchestrates the pipeline: it sends audio to STT, sends the text to
@@ -53,9 +52,24 @@ answer to TTS. The gateway only *proposes* tool calls. It never touches a device
    forwards the tool result back to the model.
 5. HA sends the final sentence to Pocket TTS; LVA plays the audio.
 
+### Why a command router?
+
+The NPU makes a small local model practical, but processing the Home Assistant
+context and generating a tool call still takes time. For a simple command like
+“turn on the kitchen light,” parsing the transcript and matching it against the
+entity catalog is faster than asking the model to work out the same action.
+
+Home Assistant already has built-in sentence matching. In our testing it was
+not reliable enough for some everyday Polish commands, particularly when users
+inflected device or room names. Domuno adds a narrow router for those cases:
+it can match forms such as *lampę* to *Lampa*, and leaves commands outside its
+grammar to the model. Home Assistant still decides which entities are exposed
+and executes the action.
+
 The router handles on/off for lights, switches, fans and input booleans,
-open/close for covers, and absolute cover positions. Negation, conditions,
-multiple actions and unsupported parameters go to the LLM. Details:
+open/close for covers, and absolute cover positions. It can refuse a recognized
+negation locally; conditions, multiple actions and unsupported parameters go to
+the LLM. Details:
 [docs/router.md](docs/router.md).
 
 The gateway never caches answers and never replays actions. It may reuse a token
@@ -75,16 +89,13 @@ prefix through GenieX; that is a runtime optimization, not an application cache.
 | HA integration | [Local OpenAI LLM](https://github.com/skye-harris/hass_local_openai_llm) 1.15.1 via HACS |
 | Audio | USB conference speaker (microphone and speaker in one device) |
 
-## Results on the test board
-
-These are individual observations from the tested stack, not a benchmark suite or
-a promise for your hardware.
+## Measurements on the test board
 
 | Measurement | Result |
 | --- | --- |
 | Whisper Turbo: 2.83 s of speech | **~0.43 s** transcription |
+| [Pocket TTS: first PCM over Wyoming](docs/performance.md#pocket-tts) | Median **0.22–0.60 s** across three Polish inputs (five warm runs per input) |
 | Router path, no LLM | **~0.9 ms** decision; **~2.6 ms** including gateway handling |
-| TTS first PCM, warm Rust process | **0.79–0.96 s** |
 | LLM fixed-sentence test, 3550-token context | median **9.97 s** |
 | KV cache, first request (empty prefix) | prefill **6823 ms**; total **7035 ms** |
 | KV cache, cached request | prefill **153 ms**; total **294 ms** (3156 tokens reused) |
@@ -92,7 +103,7 @@ a promise for your hardware.
 | Warm cache: next real HA request | total **~3.73 s**; prefill **0.16 s** |
 | Warm cache: LLM tool call | total **~3.86 s**; prefill **0.16 s** |
 
-Single observations on the test board, not a benchmark. **Cold** means an empty
+Measurements from one test board. **Cold** means an empty
 KV prefix with Qwen already loaded; **warm** means the prefix was reused. Cold
 boot, including model loading, takes 12–15 s. Details:
 [docs/performance.md](docs/performance.md).
@@ -161,14 +172,15 @@ Set at least:
 | `LVA_USER_ID`, `LVA_USER_GROUP` | `id -u`, `id -g` |
 | `AUDIO_INPUT_DEVICE`, `AUDIO_OUTPUT_DEVICE` | Your microphone and speaker |
 
-Then download the tokenizer, Whisper artifact and TTS assets:
+Set `AGENT_LANGUAGE` (`pl`, `en` or `es`), then download the tokenizer and
+the selected local speech assets:
 
 ```bash
 ./run.sh prepare
 ```
 
-`prepare` does not run inference. For `STT_PROVIDER=external` or
-`TTS_PROVIDER=external`, it skips that stage.
+`prepare` downloads models without running inference. It skips any speech stage
+set to `external`.
 
 ### 3. Check and start
 
@@ -215,9 +227,10 @@ another generic OpenAI-compatible integration may work, but is not tested.
 3. Add **Wyoming Protocol** for `<Arduino-IP>:10301` (STT) and
    `<Arduino-IP>:10201` (TTS).
 4. Add **ESPHome** for `<Arduino-IP>:6053`; do not prefix it with `http://`.
-5. Create an Assist pipeline in Polish with the Local OpenAI agent, Whisper STT
-   and Pocket TTS voice `shefowl`. Enable **Prefer local intents** and assign the
-   assistant to the LVA satellite.
+5. Create an Assist pipeline matching `AGENT_LANGUAGE` with the Local OpenAI
+   agent, Whisper STT and the matching Pocket TTS voice (`shefowl` for Polish,
+   `alba` for English, `lola` for Spanish). Enable **Prefer local intents** and
+   assign the assistant to the LVA satellite.
 6. Expose only the entities you want to control. The **Device control** tool sees
    only exposed entities, and a smaller list means a smaller prompt.
 
@@ -253,7 +266,7 @@ same boot. Reboot the board instead of deleting the guard file.
 
 ## Configuration
 
-The tested defaults are in [`.env.example`](.env.example). The most important
+The defaults are in [`.env.example`](.env.example). The most important
 values:
 
 | Variable | Default | Meaning |
@@ -261,9 +274,10 @@ values:
 | `GGUF` | — | Qwen Q4_0 GGUF path |
 | `QNN_LIB_DIR` | — | QAIRT 2.50 HTP library directory |
 | `NCTX` | `10240` | Model context size |
-| `AGENT_LANGUAGE` | `pl` | Router language: `pl` or `en` |
+| `AGENT_LANGUAGE` | `pl` | Router, local Whisper and local Pocket TTS language: `pl`, `en` or `es` |
 | `STT_PROVIDER` | `whisper-qnn` | `whisper-qnn` or `external` |
-| `TTS_PROVIDER` | `pocket-pl` | `pocket-pl` or `external` |
+| `STT_PROMPT` | empty | Optional decoder prompt; empty means no prompt |
+| `TTS_PROVIDER` | `pocket` | `pocket` or `external`; `pocket-pl` is a legacy alias |
 | `CACHE_POLICY` | `reuse` | `reuse` on GenieX 0.11.0; `reset` for 0.9.3 |
 | `RESPONSE_STYLE` | `concise` | Short voice answers; `original` for A/B |
 | `DECIDE_APPLY` | `1` | Let the router answer recognized commands |
@@ -276,17 +290,14 @@ The gateway always needs a **prompt counter**. With `GGUF` + `TOKENIZER` the
 installer creates a local CPU counter; otherwise set `COUNTER_URL` to an existing
 loopback counter. The gateway refuses to start without it.
 
-Local Whisper and Pocket TTS are Polish-only. For an English router with speech
-handled elsewhere, set:
+`AGENT_LANGUAGE` selects one language for the router, local Whisper decoding
+and local Pocket TTS per deployment. `TTS_PROVIDER=external` is optional for
+any language. It does not install or select a voice for you; configure the
+matching integration in Home Assistant. See the [Assist setup](docs/home-assistant.md#4-create-the-assist-pipeline)
+and [speech migration checks](docs/operations.md#speech-migration-checks).
 
-```dotenv
-AGENT_LANGUAGE=en
-STT_PROVIDER=external
-TTS_PROVIDER=external
-```
-
-and select English STT/TTS in Home Assistant. The full-stack script rejects
-English with a local speech recipe rather than pretending it is supported.
+The local Pocket TTS bridge accepts complete text and streams PCM audio. It
+handles one synthesis at a time; overlapping requests receive `busy`.
 
 ## Limitations
 
@@ -295,8 +306,8 @@ English with a local speech recipe rather than pretending it is supported.
 - **Full context is expensive.** A large HA catalog plus tool schemas can take
   about 20 s of prefill. Exposing fewer entities and keeping the KV prefix stable
   matter more than prompt wording.
-- **Local speech is Polish.** The router has English grammar, but the shipped
-  Whisper/Pocket TTS recipes are Polish. English needs external speech services.
+- **Speech coverage.** Local Pocket TTS synthesis was verified on VENTUNO Q
+  for Polish, English and Spanish.
 - **One NPU is shared.** Whisper and Qwen must not cold-load at the same time.
   There is no CPU fallback. FastRPC out-of-memory requires a reboot, not a retry.
 - **One tested board image.** Other ARM64 boards, QAIRT versions or GenieX
@@ -410,7 +421,7 @@ This project stands on other people's work:
 - [GenieX](https://geniex.aihub.qualcomm.com/) and [Qwen2.5](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct) — local LLM runtime and model
 - [Whisper Large-v3-Turbo](https://huggingface.co/openai/whisper-large-v3-turbo) and [Qualcomm AI Hub](https://aihub.qualcomm.com/) — STT artifact
 - [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) and [`shefowl/pocket-tts-polish-6l`](https://huggingface.co/shefowl/pocket-tts-polish-6l) — TTS model and Rust runtime
-- [Pocket TTS Wyoming](https://github.com/ikidd/pocket-tts-wyoming) — the original Wyoming adapter this server was adapted from
+- [Wyoming](https://github.com/OHF-Voice/wyoming) — protocol and Python library used by the independent TTS bridge
 - [Local OpenAI LLM](https://github.com/skye-harris/hass_local_openai_llm) — HA integration
 - [simplemma](https://github.com/adbar/simplemma), [polish-inflection](https://pypi.org/project/polish-inflection/), [num2words](https://github.com/savoirfairelinux/num2words) — router linguistics
 
@@ -420,8 +431,9 @@ The build and measurements are described in the article
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The bundled/downloaded models and runtimes keep
-their own licenses; check them before redistributing assets.
+Domuno's own code is MIT; see [LICENSE](LICENSE). Third-party software, models
+and recordings retain their own licenses. For the Pocket TTS build, see the
+[pinned sources and license notices](tts-pocket-wyoming/THIRD_PARTY_NOTICES.md).
 
 This is an independent project, not affiliated with Arduino, Qualcomm, Home
 Assistant or the Qwen project. Product names belong to their respective owners.

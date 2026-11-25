@@ -36,6 +36,7 @@ router supplies target resolution, uniqueness checks and schema validation.
 | --- | --- |
 | Polish | `Włącz lampę w salonie`, `Zamknij rolety w sypialni`, `Otwórz Markiza w Atrium na 50%` |
 | English | `Turn on the Desk lamp in the Study`, `Close the Curtain in the Bedroom`, `Set the Awning in the Atrium to fifty percent` |
+| Spanish | `Enciende la luz en la cocina`, `Cierra la persiana`, `Abre la persiana en la cocina al 50 %` |
 
 Device and area names in the examples are placeholders. The actual selectors
 always come from the current HA context, never from a built-in list.
@@ -44,17 +45,17 @@ Up to four words may precede the command verb: unknown politeness and adverb
 words are accepted, so `Natychmiast otwórz Markiza` and
 `W tej chwili otwórz Markiza` stay local. The prefix is rejected when it contains
 a scope-changing word — negation, a question, a condition, a conjunction or
-`może` — so the complete utterance can reach the model. The same rule applies to
-English. This is a small grammar guard, not a filler dictionary.
+`może` — so the complete utterance can reach the model. Polish and English
+allow short prefixes unless blocked. Spanish only allows listed
+politeness words: a room mentioned before the verb is not silently dropped.
 
-Polish and English command words come from [the Polish vocabulary](../gateway/languages/pl/vocabulary.json)
-and [the English vocabulary](../gateway/languages/en/vocabulary.json). The JSON contains only command synonyms and spoken
-replies. Tool mappings, supported domains, grammar and selector checks stay in
-code.
+Each language bundles a vocabulary with command synonyms and spoken replies,
+and a separate grammar. Tool mappings, supported domains and selector checks
+stay in code.
 
 ## Language strategies
 
-`AGENT_LANGUAGE=pl|en` selects exactly one strategy at startup. There is no
+`AGENT_LANGUAGE` selects exactly one strategy (`pl`, `en` or `es`) at startup. There is no
 language detection, translation or plugin discovery.
 
 | Module | Responsibility |
@@ -63,19 +64,21 @@ language detection, translation or plugin discovery.
 | `languages/base.py` | `Language` interface, reusable single-action parser, vocabulary validation, lemmatization and number words |
 | `languages/pl/` | Polish rules and vocabulary, `w`/`we` area prepositions, optional SGJP inflection |
 | `languages/en/` | English rules and vocabulary, `in`/`at`, phrasal verbs and the article `the` |
+| `languages/es/` | Spanish rules and vocabulary, articles and `al` for cover positions |
 | `command_router.py` | Language-independent target resolution, ambiguity checks and tool validation |
 
-Only the selected language's dictionaries are warmed. English does not import the
-Polish strategy or require `polish-inflection`. The installer always installs
-`simplemma` and `num2words`; the optional Polish packages are installed only for
-`pl`. Both languages use the same indexed matcher. It searches explicit names
+Only the selected language's dictionaries are warmed. Other strategies do not
+import Polish inflection support. The installer always installs `simplemma` and
+`num2words`; the optional Polish packages are installed only for `pl`. All
+languages use the same indexed matcher. It searches explicit names
 and aliases, generated forms (if available), lemmas (if available), then
 approximate matches. Without dictionaries, the same matcher works from literal
 spellings. Catalog indexes are cached per language strategy.
 
-A router-language change needs only a gateway restart. If the English dependency
-was never installed, run the gateway-only installer. Match the HA Assist pipeline
-language separately.
+For a gateway-only installation, re-run the installer after changing the router
+language. For a full stack, recreate local Whisper as well. Match the HA Assist
+pipeline language and TTS provider to the selected language; see
+[configuration](configuration.md#speech-providers).
 
 ## Grammar rules
 

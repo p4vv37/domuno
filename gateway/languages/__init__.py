@@ -7,8 +7,8 @@ from .base import Command, Language, normalize
 
 __all__ = ('Command', 'Language', 'normalize', 'language_codes', 'get_language', 'default_language')
 
-# Load only the selected strategy, so English never loads Polish dictionaries.
-_STRATEGIES = {'pl': '.pl', 'en': '.en'}
+# Load only the selected strategy and its dictionaries.
+_STRATEGIES = {'pl': '.pl', 'en': '.en', 'es': '.es'}
 
 
 def language_codes():

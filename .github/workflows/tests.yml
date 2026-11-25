@@ -17,14 +17,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependencies
-        run: |
-          python -m pip install --disable-pip-version-check \
-            numpy==2.2.6 \
-            simplemma==2.0.0 \
-            num2words==0.5.14 \
-            jsonschema==4.25.1 \
-            RapidFuzz==3.14.1 \
-            polish-inflection==0.7.3 \
-            polish-inflection-data==2026.6.28
+        run: python -m pip install --disable-pip-version-check -r tools/requirements-test.txt
       - name: Run offline tests
         run: PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v

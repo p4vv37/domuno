@@ -145,7 +145,7 @@ if sys.argv[1] == 'venv':
     @unittest.skipIf(os.geteuid()==0, 'installer intentionally refuses root')
     def test_invalid_language_or_provider_stops_before_dependency_install(self):
         for config in ({'AGENT_LANGUAGE': 'xx'}, {'STT_PROVIDER': 'unknown'},
-                       {'TTS_PROVIDER': 'unknown'}, {'FULL_STACK': '1', 'AGENT_LANGUAGE': 'en'}):
+                       {'TTS_PROVIDER': 'unknown'}):
             with self.subTest(config=config):
                 result = self.install(**config)
                 self.assertNotEqual(result.returncode, 0)
@@ -169,6 +169,27 @@ if sys.argv[1] == 'venv':
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((self.deploy/'stt').exists())
         self.assertFalse((self.deploy/'tts-pocket-wyoming').exists())
+
+    def test_public_prepare_selects_local_tts_model_by_language(self):
+        shutil.copy(ROOT/'run.sh', self.deploy/'run.sh')
+        fake = self.root/'bin'
+        for name, script in {'uname': 'echo aarch64', 'geniex': 'exit 0'}.items():
+            command = fake/name
+            command.write_text('#!/bin/sh\n'+script+'\n')
+            command.chmod(0o755)
+        tts = self.deploy/'tts-pocket-wyoming'
+        tts.mkdir()
+        (tts/'prepare_assets.py').write_text('import sys; print("mock TTS assets", *sys.argv[1:])')
+        env = {**self.env, 'GENIEX_BIN': str(fake/'geniex')}
+        for language, provider in (('pl', 'pocket'), ('en', 'pocket'), ('es', 'pocket-pl')):
+            with self.subTest(language=language, provider=provider):
+                (self.deploy/'.env').write_text(
+                    f'AGENT_LANGUAGE={language}\nSTT_PROVIDER=external\nTTS_PROVIDER={provider}\n'
+                    'COUNTER_URL=http://127.0.0.1:18193/count\n')
+                result = subprocess.run(['bash', str(self.deploy/'run.sh'), 'prepare'],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f'mock TTS assets --language {language}', result.stdout)
 
     def test_public_start_and_stop_leave_external_speech_untouched(self):
         script = (ROOT/'run.sh').read_text()
@@ -386,7 +407,7 @@ class PackagingTests(unittest.TestCase):
             for node in ast.walk(ast.parse(path.read_text())):
                 if not isinstance(node,ast.ImportFrom) or not node.module: continue
                 module=node.module.split('.')[-1]
-                if module.startswith('qnn_') or module in gateway_modules | {'tts_render_worker', 'rust_tts_backend'}:
+                if module.startswith('qnn_') or module in gateway_modules | {'text_normalization'}:
                     self.assertTrue((path.parent/(module+'.py')).is_file()
                                     or (path.parent/module/'__init__.py').is_file(), (path.name, module))
 

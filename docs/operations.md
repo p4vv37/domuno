@@ -123,17 +123,17 @@ Timing fields:
 | `estimated_prompt_tokens` | Conservative counter bound, not native usage |
 | `cached_tokens` | Backend-reported prefix reuse |
 
-STT and TTS emit their own payload-free lifecycle records through Docker logs:
+The Whisper STT emits payload-free `stt_metric` records through Docker logs:
 
 ```bash
 docker logs whisper-turbo-qnn > /tmp/stt.log 2>&1
-docker logs tts-pocket-pl > /tmp/tts.log 2>&1
-python3 gateway/latency_stats.py /tmp/stt.log /tmp/tts.log
+python3 gateway/latency_stats.py /tmp/stt.log
 ```
 
-Audio records have service-local request ids and are not correlated with gateway
-ids. First PCM delivery is not speaker playback. Raw container logs can contain
-ordinary diagnostic text; keep exports private.
+The Pocket TTS bridge emits no server-side timing records.
+[Measure first and complete PCM delivery client-side](performance.md#pocket-tts).
+Service request IDs are not correlated with gateway IDs, and PCM delivery is
+not speaker playback. Keep raw container logs private.
 
 ## Context audit
 
@@ -249,18 +249,65 @@ image on ARM64, then recreate only that container:
 ```bash
 # TTS
 docker compose --env-file .env -f tts-pocket-wyoming/docker-compose.yml build
-docker compose --env-file .env -f tts-pocket-wyoming/docker-compose.yml up -d pocket-tts-wyoming
+docker compose --env-file .env -f tts-pocket-wyoming/docker-compose.yml up -d --force-recreate pocket-tts-wyoming
 
 # STT (the systemd unit owns its lifecycle)
 docker compose --env-file .env -f stt/docker-compose.yml build
-docker compose --env-file .env -f stt/docker-compose.yml create
-systemctl --user restart qwen25-whisper-npu.service
+systemctl --user stop qwen25-whisper-npu.service
+docker compose --env-file .env -f stt/docker-compose.yml create --force-recreate
+systemctl --user start qwen25-whisper-npu.service
 ```
 
 Do **not** use `./run.sh stop` followed by `./run.sh start` only to rebuild an
 image: the boot guard blocks a second Qwen cold load in the same boot. Reboot if
 you need a full restart. Do not run a full start over a deployment with different
 container names or ports.
+
+### Speech migration checks
+
+These are release checks to run on the VENTUNO Q with Home Assistant, not a
+record of tests already performed.
+
+**Before cutover:** Keep the legacy TTS image, configuration and assets. In a
+separate checkout with its own prepared assets, build the new bridge under a
+separate image tag and run it under a different container name and host port
+(for example `127.0.0.1:10211:10201` for a client on the board). Do not replace
+the live service on `10201` yet. Smoke-test discovery, a complete synthesis in the selected language, and first/complete PCM on the test endpoint. If testing from HA,
+bind the test port only to the trusted LAN and use a separate Assist pipeline.
+Stop the test container after the smoke test.
+
+**At cutover:**
+1. Preserve `.env` and the asset paths. Compare the speech settings with
+   [the example](../.env.example). Clear any legacy `STT_PROMPT` override unless
+   you are deliberately testing decoder bias. Set `AGENT_LANGUAGE` to your
+   language and use `TTS_PROVIDER=pocket` for local synthesis. Existing
+   `TTS_PROVIDER=pocket-pl` configurations still work. If switching to
+   `external`, select the external integration in HA and explicitly stop the
+   old local stage if it is still running; switching providers does not remove it.
+2. Run `./run.sh prepare` for the selected local assets, then `./run.sh check`.
+   Rebuild and force-recreate the enabled local speech containers as described
+   above. A container restart alone does not apply changed environment variables.
+   If the router language changed, restart `qwen-ha-gateway.service` after
+   ensuring its language dependencies are installed. If a cold
+   boot is needed, verify Qwen passes its readiness probe before Whisper starts,
+   and verify Pocket TTS starts from its prepared local assets.
+3. Refresh Wyoming discovery if needed. Verify Whisper advertises the configured
+   language and that Pocket TTS exposes the corresponding voice: `shefowl`
+   (`pl-PL`), `alba` (`en-US`), or `lola` (`es-ES`). Update the Assist pipeline
+   language and reselect the voice if necessary.
+4. On the matching Assist pipeline, verify a real utterance is transcribed, a safe
+   tool action completes, and the satellite plays a complete response. Check
+   first and complete PCM client-side for the new bridge. With two overlapping
+   synthesis requests, verify the second receives `busy` and a later request can
+   succeed. For English or Spanish, separately verify actual Whisper recognition
+   and native Pocket TTS synthesis before claiming end-to-end validation on the board.
+
+**Rollback:** If the new TTS fails, stop only its container and restore the
+saved legacy image, configuration and assets on the production Wyoming
+endpoint. Refresh discovery and reselect the legacy voice if needed; leave
+Qwen running. Alternatively, a separately installed and verified Piper service for your
+language is a manual fallback: select it in Assist and set
+`TTS_PROVIDER=external`. Domuno does not install Piper or switch over automatically.
 
 ### GenieX upgrade
 
@@ -318,4 +365,4 @@ Back up only what is not reproducible:
 
 Models and tokenizers are reproducible with `./run.sh prepare`. The repository
 contains no secrets. Restoring is: copy the repository and `.env`, run
-`./run.sh check`, then `./run.sh start`.
+`./run.sh prepare` if assets are missing, then `./run.sh check` and `./run.sh start`.

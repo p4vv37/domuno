@@ -90,6 +90,7 @@ class Grammar:
     position_labels: frozenset[str] = frozenset()
     leading_articles: frozenset[str] = frozenset()
     normalize_apostrophes: bool = False
+    allowed_prefix_words: frozenset[str] | None = None
 
     @classmethod
     def load(cls, path):
@@ -97,7 +98,7 @@ class Grammar:
             data = json.load(source)
         word_sets = ('area_prepositions', 'position_prepositions', 'reserved_synonym_words',
                      'prefix_blockers', 'tail_blockers', 'negations')
-        optional_sets = ('position_labels', 'leading_articles')
+        optional_sets = ('position_labels', 'leading_articles', 'allowed_prefix_words')
         strings = ('percentage_unit_pattern', 'percentage_prefix', 'warmup_word')
         required = set(word_sets + strings)
         allowed = required | set(optional_sets) | {'normalize_apostrophes'}
@@ -178,7 +179,12 @@ class Language(ABC):
         """
         if len(prefix) > self.max_prefix_words:
             return False
-        return not any(word in self.grammar.prefix_blockers for word in prefix)
+        rules = self.grammar
+        if rules.allowed_prefix_words is not None:
+            prefix = [word.rstrip(',') for word in prefix]
+            if any(word not in rules.allowed_prefix_words for word in prefix):
+                return False
+        return not any(word in rules.prefix_blockers for word in prefix)
 
     def find_command(self, tokens):
         for index in range(len(tokens)):

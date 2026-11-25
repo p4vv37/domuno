@@ -1,0 +1,24 @@
+{
+  "commands": {
+    "close": ["cierra", "cierre", "cerrar", "baja"],
+    "open": ["abre", "abra", "abrir", "sube"],
+    "on": ["enciende", "encienda", "encender", "prende"],
+    "off": ["apaga", "apague", "apagar"],
+    "position": ["pon", "ponga", "ajusta", "ajuste"]
+  },
+  "responses": {
+    "success": "Listo.",
+    "default_clarification": "No puedo determinar qué acción quieres realizar.",
+    "clarifications": {
+      "negation": "De acuerdo, no realizaré esa acción.",
+      "catalog-unavailable": "La lista de dispositivos no está disponible.",
+      "no-target": "No encontré ese dispositivo. Indica un nombre más preciso.",
+      "ambiguous-area": "El dispositivo tiene varias zonas. Aclara su nombre en Home Assistant.",
+      "missing-area": "¿En qué habitación?",
+      "area-mismatch": "No encontré ese dispositivo en esa habitación.",
+      "ambiguous-target": "Hay varios dispositivos que coinciden. Indica un nombre más preciso.",
+      "invalid-position": "Indica un porcentaje entero entre cero y cien.",
+      "position-unavailable": "No hay una herramienta compatible para ajustar la posición de ese dispositivo."
+    }
+  }
+}

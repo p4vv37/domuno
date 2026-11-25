@@ -1,12 +1,14 @@
-"""Experimental Polish QNN Wyoming endpoint. Never enables CPU fallback."""
+"""Experimental QNN Wyoming endpoint. Never enables CPU fallback."""
 import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import functools
 import json
 import logging
 import math
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 import signal
@@ -19,24 +21,40 @@ from wyoming.server import AsyncEventHandler, AsyncServer
 
 LOG = logging.getLogger(__name__)
 MAX_BYTES = 16000 * 2 * 30
-# A static Polish vocabulary prompt. It biases the decoder toward command words
-# and common rooms without seeing the live HA catalog. Override with STT_PROMPT.
-DEFAULT_PROMPT = (
-    'Włącz światło, wyłącz światło, otwórz roletę, zamknij roletę, '
-    'ustaw pozycję rolety, sypialnia, gabinet, salon, kuchnia.'
-)
 ATTRIBUTION = Attribution(
     name='Qualcomm / OpenAI',
     url='https://huggingface.co/qualcomm/Whisper-Large-V3-Turbo-Quantized')
+SUPPORTED_LANGUAGES = ('pl', 'en', 'es')
+_LOCALE = re.compile(r'([a-z]{2})(?:[-_][a-z]{4})?(?:[-_](?:[a-z]{2}|[0-9]{3}))?',
+                     re.IGNORECASE | re.ASCII)
+
+
+@dataclass
+class ExternalVadAsrProgram(AsrProgram):
+    # Wyoming 1.8 does not declare this field, but newer HA clients use it.
+    requires_external_vad: bool = True
+
+
+def language_code(field):
+    """Accept a supported language with optional script and region subtags."""
+    match = _LOCALE.fullmatch(field) if isinstance(field, str) else None
+    base = match[1].lower() if match else None
+    return base if base in SUPPORTED_LANGUAGES else None
+
+
+def make_info(language):
+    label = {'pl': 'Polish', 'en': 'English', 'es': 'Spanish'}[language]
+    return Info(asr=[ExternalVadAsrProgram(
+        name='whisper-small-qnn-arduino', attribution=ATTRIBUTION, installed=True,
+        description='EXPERIMENTAL: Whisper Large-v3-Turbo W8A16 on Arduino NPU', version='0.1',
+        models=[AsrModel(
+            name='large-v3-turbo-w8a16-qnn', attribution=ATTRIBUTION, installed=True,
+            description=f'Multilingual Large-v3-Turbo W8A16, {label}, QNN HTP',
+            version='v0.66.0', languages=[language])])])
+
+
 # Keep the legacy program name so existing HA pipelines keep the same identity.
-INFO = Info(asr=[AsrProgram(
-    name='whisper-small-qnn-arduino', attribution=ATTRIBUTION, installed=True,
-    description='EXPERIMENTAL: Whisper Large-v3-Turbo W8A16 on Arduino NPU', version='0.1',
-    models=[AsrModel(
-        name='large-v3-turbo-w8a16-qnn', attribution=ATTRIBUTION, installed=True,
-        description='Multilingual Large-v3-Turbo W8A16, Polish, QNN HTP',
-        version='v0.66.0', languages=['pl'])],
-    requires_external_vad=True)])
+INFO = make_info('pl')
 
 
 def pcm_decode(raw):
@@ -66,8 +84,9 @@ async def _finish_worker(future):
 
 
 class State:
-    def __init__(self, engine, pcm_decoder=pcm_decode, info=None):
-        self.info = INFO if info is None else info
+    def __init__(self, engine, pcm_decoder=pcm_decode, info=None, language='pl'):
+        self.language = language
+        self.info = make_info(language) if info is None else info
         self.engine = engine
         self.decode = pcm_decoder
         self.lock = asyncio.Lock()
@@ -118,9 +137,12 @@ class Handler(AsyncEventHandler):
         if Describe.is_type(event.type):
             await self.write_event(getattr(self.state, 'info', INFO).event())
         elif Transcribe.is_type(event.type):
-            language = Transcribe.from_event(event).language
-            if language and language.lower().replace('_','-') not in ('pl','pl-pl'):
-                return await self.fail('unsupported-language', 'This experimental endpoint supports Polish only')
+            # Transcribe.from_event collapses a missing key and explicit null.
+            data = event.data or {}
+            if 'language' in data and language_code(data['language']) != self.state.language:
+                return await self.fail(
+                    'unsupported-language',
+                    f'This endpoint is configured for {self.state.language}')
             self.audio.clear()
             self.started = False
         elif AudioStart.is_type(event.type):
@@ -178,8 +200,8 @@ async def serve(args):
     from qnn_whisper_engine import QnnWhisperEngine
     engine = QnnWhisperEngine(model_dir=args.model_dir, tokenizer=args.tokenizer,
                               backend=args.backend, metadata=args.metadata,
-                              prompt=args.prompt)
-    state = State(engine)
+                              prompt=args.prompt, language=args.language)
+    state = State(engine, language=args.language)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -203,12 +225,15 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--uri',default='tcp://0.0.0.0:10301')
     p.add_argument('--metadata', required=True, help='Public Turbo artifact metadata')
-    p.add_argument('--prompt', default=os.environ.get('STT_PROMPT') or DEFAULT_PROMPT,
-                   help='Static Polish decoder prompt; empty disables it')
+    p.add_argument('--language', default=os.environ.get('AGENT_LANGUAGE', 'pl'),
+                   choices=SUPPORTED_LANGUAGES,
+                   help='Language token and advertised language (from AGENT_LANGUAGE)')
+    # Forced prompt tokens can make this quantized decoder emit EOT immediately.
+    p.add_argument('--prompt', default=os.environ.get('STT_PROMPT', ''),
+                   help='Experimental decoder prompt (from STT_PROMPT); empty disables it')
     for name in ['model-dir','tokenizer','backend']:
         p.add_argument('--'+name,required=True)
-    args = p.parse_args(argv)
-    return args
+    return p.parse_args(argv)
 
 
 if __name__ == '__main__':

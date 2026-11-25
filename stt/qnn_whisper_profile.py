@@ -8,7 +8,12 @@ MEL_BINS = 128
 VOCAB_SIZE = 51866
 LAYERS = 4
 HEADS = 20
-SPECIAL_IDS = (50258, 50269, 50360, 50364, 50257)
+# The pinned multilingual v3 tokenizer assigns these exact IDs.
+SOT_ID = 50258
+LANGUAGE_TOKEN_IDS = {'pl': 50269, 'en': 50259, 'es': 50262}
+TRANSCRIBE_ID = 50360
+NOTIMESTAMPS_ID = 50364
+EOT_ID = 50257
 SCOPE = ('w8a16', 'precompiled_qnn_onnx',
          {'qairt': '2.50.0.260828221209', 'onnx_runtime': '1.30.0'},
          'qualcomm-qcs8275')
@@ -19,13 +24,15 @@ class Profile:
         self.tensors = tensors
         self.mel_bins = MEL_BINS
         self.vocab_size = VOCAB_SIZE
-        self.special_ids = SPECIAL_IDS
 
-    def validate_tokenizer(self, tokenizer, ids):
-        if tuple(ids) != self.special_ids:
-            raise ValueError('Invalid multilingual tokenizer special IDs for profile')
-        if any(i is None or not 0 <= i < self.vocab_size for i in ids):
+    def validate_tokenizer(self, tokenizer, ids, language):
+        if len(ids) != 5 or any(type(i) is not int for i in ids):
             raise ValueError('Invalid multilingual Whisper tokenizer')
+        sot, language_id, transcribe, notimestamps, eot = ids
+        if (sot, transcribe, notimestamps, eot) != (SOT_ID, TRANSCRIBE_ID, NOTIMESTAMPS_ID, EOT_ID):
+            raise ValueError('Unexpected Whisper control tokens')
+        if language_id != LANGUAGE_TOKEN_IDS.get(language):
+            raise ValueError('Unexpected Whisper language token for configured language')
         if (tokenizer.get_vocab_size() != VOCAB_SIZE
                 or tokenizer.token_to_id('<|yue|>') != 50358):
             raise ValueError('Turbo requires matching full multilingual v3 tokenizer')

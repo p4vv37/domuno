@@ -27,8 +27,8 @@ This is a small, hardware-specific project. Useful contributions include:
 - features that depend on cloud inference or a permanently running GPU host
 - adding configuration variables or abstractions without a concrete use case
 
-This repository is a tested recipe, not a generic installer. A documented
-limitation is often better than a speculative feature.
+This repository targets a specific board and software stack, not a generic
+installer. A documented limitation is often better than a speculative feature.
 
 ## Ground rules
 
@@ -59,20 +59,18 @@ points.
 
 1. Fork the repository and create a branch for your change.
 2. Make the change and keep the diff focused.
-3. Run the offline tests:
+3. Use the same dependency install and test commands as CI (Python 3.12 in an
+   activated virtual environment locally):
 
    ```bash
-   PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+   python -m pip install --disable-pip-version-check -r tools/requirements-test.txt
+   PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v
    ```
 
-   Install the router's required dependencies (`jsonschema` and `RapidFuzz`)
-   using the versions in the debugging guide below. Some tests are skipped
-   without `numpy`, `simplemma`, `num2words` or
-   `polish-inflection`. CI installs them; a local `.venv` is fine too. Use
-   `.venv/bin/python` to exercise the installed `simplemma`; number normalization
-   tests require `num2words==0.5.14`. To step through the router on a PC, use the
-   synthetic harness and the VS Code / PyCharm setup in
-   [docs/debugging-router.md](docs/debugging-router.md).
+   Once dependencies are installed, the tests use synthetic fixtures and local
+   loopback services only. They do not call external APIs, access external networks,
+   or require model downloads, Docker or NPU hardware. To step through the router
+   on a PC, see [docs/debugging-router.md](docs/debugging-router.md).
 
 4. If you changed board, NPU, Docker, audio or systemd behavior, test on the
    board and describe the result. "Not tested on hardware" is acceptable when
@@ -94,7 +92,7 @@ setup.sh                internal installer (systemd units + uv venv)
 llm/backend.py          GenieX version check, boot guard, readiness
 stt/                    QNN Whisper engine, profile validation, Wyoming server
 gateway/                OpenAI proxy, prompt budget, router, metrics
-tts-pocket-wyoming/     Rust TTS adapter, text streaming, PCM delivery
+tts-pocket-wyoming/     Wyoming-to-Rust HTTP bridge, PCM delivery
 lva/                    Linux Voice Assistant compose configuration
 tools/                  offline router and full HA-loop debug harnesses
 tests/                  offline unit and integration-style tests
@@ -105,7 +103,7 @@ Start reading at `gateway/chat_gateway.py`, then
 `gateway/context_catalog.py` (HA overview parsing) and
 `gateway/command_router.py` (routing and tool validation). For audio, start with
 the Wyoming handlers, then `stt/qnn_whisper_engine.py` or
-`tts-pocket-wyoming/rust_tts_backend.py`.
+`tts-pocket-wyoming/wyoming_tts_server.py`.
 
 ## How to report a bug
 
@@ -164,8 +162,8 @@ this hardware-specific recipe.
 - Systemd unit values: no quotes, `$`, `%`, `\` or newlines; use the installer.
 - Logging: never log prompts, transcripts, entity names, tool arguments, audio or
   credentials. Metrics must stay payload-free. Diagnostics are private opt-ins.
-- Tests: synthetic Home Assistant data, fake models, no network and no NPU. Tests
-  must pass on a machine without the board.
+- Tests: synthetic Home Assistant data and fake models. Use loopback only; no
+  external network, API or NPU. Tests must pass on a machine without the board.
 - Commit messages: a short imperative subject; add a body when the reason is not
   obvious.
 

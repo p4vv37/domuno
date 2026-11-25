@@ -10,9 +10,9 @@ import threading
 from time import perf_counter
 
 try:
-    from .qnn_whisper_profile import load_profile
+    from .qnn_whisper_profile import LANGUAGE_TOKEN_IDS, load_profile
 except ImportError:
-    from qnn_whisper_profile import load_profile
+    from qnn_whisper_profile import LANGUAGE_TOKEN_IDS, load_profile
 
 def validate(actual, expected):
     by_name = {x.name: x for x in actual}
@@ -26,7 +26,6 @@ def validate(actual, expected):
 
 _REGISTRY_LOCK = threading.RLock()
 _OWNER = None
-
 
 def forced_decoder_token(prefix, prompt_ids, step):
     """Prefix tokens for the four Whisper control steps, then initial prompt."""
@@ -43,7 +42,7 @@ class QnnWhisperEngine:
     Clips shorter than 100 ms, effectively silent, or longer than 30 s fail.
     This engine does not resample, trim, silently truncate or change host env.
     """
-    def __init__(self, model_dir, tokenizer, backend, max_tokens=192, *, metadata, prompt=''):
+    def __init__(self, model_dir, tokenizer, backend, max_tokens=192, *, metadata, prompt='', language='pl'):
         global _OWNER
         self._lock = threading.RLock()
         self.encoder = self.decoder = self.tokenizer = None
@@ -52,6 +51,9 @@ class QnnWhisperEngine:
         self._ort = None
         if not 4 <= max_tokens <= 199:
             raise ValueError('max_tokens must be in [4,199] including prefix steps')
+        if language not in LANGUAGE_TOKEN_IDS:
+            raise ValueError('language must be one of: ' + ', '.join(LANGUAGE_TOKEN_IDS))
+        self.language = language
         self.profile = load_profile(metadata)
         self.max_tokens = max_tokens
         root = Path(model_dir)
@@ -71,9 +73,10 @@ class QnnWhisperEngine:
                 raise RuntimeError('QNN plugin already owned by another engine')
             self.np = importlib.import_module('numpy')
             self.tokenizer = importlib.import_module('tokenizers').Tokenizer.from_file(str(tokenizer))
-            special = ['<|startoftranscript|>', '<|pl|>', '<|transcribe|>', '<|notimestamps|>', '<|endoftext|>']
+            special = ['<|startoftranscript|>', f'<|{language}|>', '<|transcribe|>',
+                       '<|notimestamps|>', '<|endoftext|>']
             self.ids = [self.tokenizer.token_to_id(s) for s in special]
-            self.profile.validate_tokenizer(self.tokenizer, self.ids)
+            self.profile.validate_tokenizer(self.tokenizer, self.ids, language)
             prompt = (prompt or '').strip()
             self.prompt_ids = (self.tokenizer.encode(prompt, add_special_tokens=False).ids
                                if prompt else [])

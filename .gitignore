@@ -30,3 +30,5 @@ stt/runtime/
 !.vscode/extensions.json
 !.vscode/launch.json
 !.vscode/settings.json
+
+sync_board.sh

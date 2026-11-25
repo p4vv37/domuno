@@ -1,10 +1,9 @@
 # Performance
 
-These are measurements from one Arduino VENTUNO Q build, not a benchmark suite.
-They are useful for understanding the shape of the system and for comparing your
-own runs with the same labels, not a guarantee for other boards, images or prompts.
-The cold/warm numbers come from the GenieX 0.11.0 metrics; the model and context
-charts summarize the configuration choices.
+These are measurements from one Arduino VENTUNO Q, not a benchmark suite or an
+end-to-end latency guarantee. The model, context and KV-cache figures come from
+the original GenieX 0.11.0 measurements. Pocket TTS was measured separately on the
+board with the current bridge.
 
 ## Test setup
 
@@ -24,7 +23,6 @@ charts summarize the configuration choices.
 | --- | --- | --- |
 | STT | 2.832 s of Polish speech | **~0.43 s** transcription |
 | Router | One recognized command | **0.9 ms** decision; **2.6 ms** including gateway handling, no inference |
-| TTS | First PCM, warm Rust process | **0.79–0.96 s** in three samples |
 | LLM | Fixed-sentence test, 3550-token context | median **9.97 s** |
 | LLM | No HA context, fixed sentence | ~1.8 s |
 | LLM | Decode speed | ~14–15 tokens/s |
@@ -87,21 +85,35 @@ Any change in the early prompt, another client on the same backend, or a backend
 restart reduces reuse. `keepalive` keeps weights loaded; `cached_tokens` measures
 prefix reuse. They are different.
 
-## TTS streaming
+## Pocket TTS
 
-Three warm-process samples:
+Measured 2026-11-24 on VENTUNO Q: ARM64 Docker build, Kyutai release v4.0.1
+(`pocket-tts` binary 3.3.0), shefowl Polish 6L, quantized with one Rayon thread.
+The container had no network access. A client inside it sent a complete Wyoming
+`synthesize` request over loopback. Times run from submission to the first
+nonempty `audio-chunk` and to `audio-stop`, respectively.
 
-| Audio length | First PCM | Full delivery |
-| --- | ---: | ---: |
-| 1.5 s | 0.79 s | 0.82 s |
-| 6.6 s | 0.96 s | 2.33 s |
-| 11.4 s | 0.80 s | 3.78 s |
+Medians of five requests per text after one warm-up:
 
-![TTS first and complete PCM for 1.5 s, 6.6 s and 11.4 s audio](images/tts-length-chart.svg)
+| Polish text | Generated audio | First PCM | Complete PCM |
+| --- | ---: | ---: | ---: |
+| Short confirmation | 2.92 s | 0.22 s | 0.91 s |
+| Three sentences with temperature and percentage | 8.84 s | 0.60 s | 2.86 s |
+| Longer status summary | 15.80 s | 0.47 s | 4.95 s |
 
-These are client-side Wyoming observations, not speaker playback. The first
-sentence can start before the full text stream ends; a one-sentence answer still
-needs enough text for a complete sentence.
+![Median first and complete PCM delivery for three Polish inputs](images/tts-length-chart.svg)
+
+<details>
+<summary>Benchmark inputs</summary>
+
+- Short: `Światło w kuchni jest włączone.`
+- Medium: `W gabinecie jest 21,5 °C. Jasność lampy ustawiono na 50%. Rolety w sypialni są otwarte.`
+- Long: `Lampa w gabinecie jest włączona. Rolety w salonie są otwarte do połowy, a w sypialni są zamknięte. W kuchni jest 22 °C, a w gabinecie 19 °C. Wszystkie pozostałe światła są wyłączone.`
+
+</details>
+
+These are PCM delivery times, not HA or speaker latency. The bridge streams
+PCM output, not text input. Cold model startup is not included in the table.
 
 ## Measuring a pipeline run
 

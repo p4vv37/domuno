@@ -19,7 +19,7 @@ RESPONSE_STYLE="${RESPONSE_STYLE:-concise}"
 ROUTER_MISS_LOGGING="${ROUTER_MISS_LOGGING:-0}"
 AGENT_LANGUAGE="${AGENT_LANGUAGE:-pl}"
 STT_PROVIDER="${STT_PROVIDER:-whisper-qnn}"
-TTS_PROVIDER="${TTS_PROVIDER:-pocket-pl}"
+TTS_PROVIDER="${TTS_PROVIDER:-pocket}"
 FULL_STACK="${FULL_STACK:-0}"
 GENIEX_BIN="${GENIEX_BIN:-$HOME/.local/bin/geniex}"
 LOG_DIR="$DEPLOY_DIR/logs"
@@ -39,10 +39,10 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || fail 'Python 3.
 (cd "$DEPLOY_DIR/gateway" && python3 -B -m languages -- "$AGENT_LANGUAGE")
 
 [[ $STT_PROVIDER == whisper-qnn || $STT_PROVIDER == external ]] || fail 'STT_PROVIDER must be whisper-qnn or external.'
-[[ $TTS_PROVIDER == pocket-pl || $TTS_PROVIDER == external ]] || fail 'TTS_PROVIDER must be pocket-pl or external.'
-if [[ $FULL_STACK == 1 && $AGENT_LANGUAGE != pl ]]; then
-    [[ $STT_PROVIDER == external && $TTS_PROVIDER == external ]] || fail 'Local speech recipes require Polish; select external STT and TTS for other languages.'
-fi
+case "$TTS_PROVIDER" in
+    pocket|pocket-pl|external) ;;
+    *) fail 'TTS_PROVIDER must be pocket or external (legacy pocket-pl is accepted).' ;;
+esac
 for port in "$GATEWAY_PORT" "$COUNTER_PORT"; do
     [[ $port =~ ^[0-9]+$ ]] && (( port > 0 && port < 65536 )) || fail 'Invalid port.'
 done
