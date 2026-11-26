@@ -4,7 +4,8 @@
     "open": ["open", "raise"],
     "on": ["turn on", "switch on", "enable", "start"],
     "off": ["turn off", "switch off", "disable", "stop"],
-    "position": ["set"]
+    "position": ["set"],
+    "brightness": ["dim", "brighten", "set brightness of", "set the brightness of"]
   },
   "responses": {
     "success": "Done",

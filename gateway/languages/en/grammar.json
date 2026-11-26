@@ -13,5 +13,6 @@
   "percentage_prefix": "percent",
   "normalize_apostrophes": true,
   "leading_articles": ["the"],
+  "generic_light_words": ["light", "lights", "lamp", "lamps", "lighting"],
   "warmup_word": "home"
 }

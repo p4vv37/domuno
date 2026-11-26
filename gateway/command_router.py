@@ -2,14 +2,15 @@
 """Language-independent HA command router; proposes tools, never executes actions.
 
 Names and areas come from the current HA overview; arguments must satisfy the
-advertised JSON Schema. Simple on/off, open/close and absolute cover positions
-are routed.
+advertised JSON Schema. Simple on/off, open/close, absolute cover positions and absolute light
+brightness are routed.
 Other utterances pass to the LLM. Ambiguous targets ask for clarification.
 
 Matching builds a per-catalog index: explicit spellings first, then inflected
 forms provided by the language strategy, then lemmas, then a one-edit recovery
 for STT noise. Singular and plural forms share target resolution. The router
-proposes an action only for one matching device after area filtering.
+proposes an action for one matching device after area filtering, or for an
+explicit, unambiguous area in a generic light-brightness request.
 """
 from __future__ import annotations
 
@@ -34,10 +35,12 @@ _TOOL_NAMES_BY_INTENT = {
     'off': ('intent__HassTurnOff', 'HassTurnOff'),
     'on': ('intent__HassTurnOn', 'HassTurnOn'),
     'position': ('intent__HassSetPosition', 'HassSetPosition'),
+    'brightness': ('light__HassLightSet', 'HassLightSet'),
 }
 _DOMAINS = {
     'open': frozenset(('cover',)),
     'close': frozenset(('cover',)),
+    'brightness': frozenset(('light',)),
     'on': frozenset(('light', 'switch', 'fan', 'input_boolean')),
     'off': frozenset(('light', 'switch', 'fan', 'input_boolean')),
     'position': frozenset(('cover',)),
@@ -190,7 +193,7 @@ def _closest(index, text):
     return found if best >= .75 and best - second >= .05 else None
 
 
-def _index_match(index, text, lemma):
+def _index_match(index, text, lemma, *, allow_fuzzy=True):
     """Matching entity indexes for one phrase, or None when nothing matches."""
     hit = index.names.get(text)
     if hit:
@@ -202,16 +205,16 @@ def _index_match(index, text, lemma):
         hit = index.lemmas.get(lemma)
         if hit:
             return set(hit)
-    return _fuzzy(index, text, lemma)
+    return _fuzzy(index, text, lemma) if allow_fuzzy else None
 
 
-def _resolve(index, catalog, text, *, language):
+def _resolve(index, catalog, text, *, language, allow_fuzzy=True):
     """Resolve a spoken phrase to matching (index, entity) pairs."""
     norm = normalize(text)
     if not norm:
         return []
     lemma = language.lemma(text)
-    hit = _index_match(index, norm, lemma)
+    hit = _index_match(index, norm, lemma, allow_fuzzy=allow_fuzzy)
     if hit is None:
         return []
     return [(i, catalog.entities[i]) for i in sorted(hit)]
@@ -323,28 +326,37 @@ def _schema_accepts(value, schema):
     return Draft7Validator(schema).is_valid(value)
 
 
-def _arguments(function, entity, area, position=None):
-    """Keep canonical selectors and validate against the actual advertised tool."""
+def _device_action(intent, arguments, tools, tool_choice):
+    function = _action_tool(intent, tools, tool_choice)
+    if function is None:
+        if intent == 'position' and _action_tool('position', tools, None) is None:
+            return Decision(kind=DecisionKind.CLARIFY, reason='position-unavailable')
+        return Decision(kind=DecisionKind.PASS, reason='tool-unavailable')
     schema = function.get('parameters')
-    if not isinstance(schema, dict):
-        return None
-    properties = schema.get('properties', {})
-    # Domain is essential: omitting it could select a same-named device of a
-    # different kind. Name is essential because area alone can target a group.
-    if not isinstance(properties, dict) or not {'name', 'domain'} <= properties.keys():
-        return None
-    arguments = {'name': _canonical(entity.names), 'domain': [entity.domain]}
-    if position is not None:
-        if 'position' not in properties:
-            return None
-        arguments['position'] = position
-    if area:
-        if 'area' not in properties:
-            return None
-        arguments['area'] = area
-    if not _schema_accepts(arguments, schema):
-        return None
-    return arguments
+    if not _schema_accepts(arguments, schema) or arguments.keys() - schema.get('properties', {}).keys():
+        return Decision(kind=DecisionKind.PASS, reason='unsupported-schema')
+    return Decision(kind=DecisionKind.TOOLCALL,
+                    tool_call=ToolCall(name=function['name'], arguments=arguments))
+
+
+def _area_brightness(catalog, allowed, brightness, tools, tool_choice):
+    """Send an area-only call only for a single unambiguous area."""
+    if not any(catalog.entities[i].domain == 'light' for i in allowed):
+        return Decision(kind=DecisionKind.PASS, reason='no-target')
+    areas = {tuple(_split_raw(catalog.entities[i].areas or '')) for i in allowed}
+    if len(areas) != 1:
+        return Decision(kind=DecisionKind.CLARIFY, reason='ambiguous-area')
+    (selectors,) = areas
+    if len(selectors) != 1:
+        return Decision(kind=DecisionKind.CLARIFY, reason='ambiguous-area')
+    area = selectors[0]
+    if any(i not in allowed and normalize(area) in _explicit_aliases(entity.areas)
+           for i, entity in enumerate(catalog.entities)):
+        return Decision(kind=DecisionKind.CLARIFY, reason='ambiguous-area')
+    if not 0 <= brightness <= 100:
+        return Decision(kind=DecisionKind.CLARIFY, reason='invalid-position')
+    return _device_action('brightness', {'area': area, 'domain': ['light'], 'brightness': brightness},
+                          tools, tool_choice)
 
 
 def decide(messages, catalog: Catalog | None, tools, default_area=None, tool_choice=None, language=None):
@@ -375,9 +387,15 @@ def decide(messages, catalog: Catalog | None, tools, default_area=None, tool_cho
     utterance = _text_content(last.get('content'))
     if not utterance:
         return Decision(kind=DecisionKind.PASS, reason='no-utterance')
-    # Strip terminal sentence punctuation only, preserving device names inside.
-    utterance = utterance.strip().rstrip('.!?')
+    # Preserve internal punctuation and do not turn a question into an action.
+    utterance = utterance.strip()
+    if utterance.endswith('?'):
+        return Decision(kind=DecisionKind.PASS, reason='outside-grammar')
+    utterance = utterance.rstrip('.!')
     command = language.parse(utterance)
+    # Keep dotted names intact, but never fuzzy-match across a potential
+    # sentence boundary: the extra text may change the scope of the command.
+    allow_fuzzy = re.search(r'[.!?]\s', utterance) is None
     # `invalid-position` means a complete absolute-position phrase with a value
     # outside 0-100. Unknown, fractional or relative syntax is `outside-grammar`
     # and must still reach the LLM.
@@ -386,10 +404,11 @@ def decide(messages, catalog: Catalog | None, tools, default_area=None, tool_cho
         kind = DecisionKind.CLARIFY if command.reason == 'negation' else DecisionKind.PASS
         return Decision(kind=kind, reason=command.reason)
     intent = command.intent
-    if command.position is not None:
-        if intent not in ('open', 'close', 'position'):
+    if command.percentage is not None:
+        if intent not in ('open', 'close', 'position', 'brightness'):
             return Decision(kind=DecisionKind.PASS, reason='outside-grammar')
-        intent = 'position'
+        if intent != 'brightness':
+            intent = 'position'
     tail = command.target.split()
     if tool_choice == 'none':
         return Decision(kind=DecisionKind.PASS, reason='tool-choice-none')
@@ -401,37 +420,43 @@ def decide(messages, catalog: Catalog | None, tools, default_area=None, tool_cho
 
     # Try the complete name first (it may contain "w"). Otherwise separate an
     # explicit area. Never let domain filtering hide a name collision.
-    targets = resolve(' '.join(tail)) if tail else []
+    name_text = ' '.join(tail)
+    marker = next((i for i, word in enumerate(tail)
+                   if normalize(word) in language.area_prepositions), None)
+    # A fuzzy candidate for the entire phrase must not swallow a spoken area.
+    targets = resolve(name_text, allow_fuzzy=allow_fuzzy and not (
+        intent == 'brightness' and marker is not None))
+    explicit_area = not targets and marker is not None
     area_text = default_area
-    if not targets:
-        for marker, word in enumerate(tail):
-            if normalize(word) in language.area_prepositions:
-                targets = resolve(' '.join(tail[:marker]))
-                area_text = ' '.join(tail[marker + 1:])
-                if not area_text:
-                    return Decision(kind=DecisionKind.CLARIFY, reason='missing-area')
-                break
+    if explicit_area:
+        name_text = ' '.join(tail[:marker])
+        targets = resolve(name_text, allow_fuzzy=allow_fuzzy)
+        area_text = ' '.join(tail[marker + 1:])
+        if not area_text:
+            return Decision(kind=DecisionKind.CLARIFY, reason='missing-area')
+    if area_text:
+        area_only = (intent == 'brightness' and explicit_area and not targets
+                     and language.is_generic_light(name_text))
+        allowed = _index_match(area_index, normalize(area_text), language.lemma(area_text),
+                               allow_fuzzy=allow_fuzzy and not area_only) or set()
+        if area_only:
+            return _area_brightness(catalog, allowed, command.percentage, tools, tool_choice)
+        if targets:
+            targets = [(i, entity) for i, entity in targets if i in allowed]
+            if not targets:
+                return Decision(kind=DecisionKind.PASS, reason='area-mismatch')
     if not targets:
         if position_out_of_range or command.intent == 'position':
             # "Set brightness ..." and other parameterized domains are outside
             # the cover-position grammar. Preserve the complete request for LLM.
             return Decision(kind=DecisionKind.PASS, reason='outside-grammar')
         return Decision(kind=DecisionKind.PASS, reason='no-target')
-    if area_text:
-        norm_area = normalize(area_text)
-        area_lemma = language.lemma(area_text)
-        allowed = _index_match(area_index, norm_area, area_lemma) or set()
-        targets = [(i, entity) for i, entity in targets if i in allowed]
-        if not targets:
-            return Decision(kind=DecisionKind.PASS, reason='area-mismatch')
     if len(targets) != 1:
         return Decision(kind=DecisionKind.CLARIFY, reason='ambiguous-target')
     entity = targets[0][1]
-    if position_out_of_range:
-        if entity.domain != 'cover':
-            return Decision(kind=DecisionKind.PASS, reason='outside-grammar')
-    elif entity.domain not in _DOMAINS[intent]:
-        return Decision(kind=DecisionKind.PASS, reason='unsupported-domain')
+    if entity.domain not in _DOMAINS[intent]:
+        reason = 'outside-grammar' if position_out_of_range else 'unsupported-domain'
+        return Decision(kind=DecisionKind.PASS, reason=reason)
     # A joined area scalar cannot establish one unambiguous HA selector.
     areas = _split_raw(entity.areas) if entity.areas else []
     if len(areas) > 1:
@@ -451,16 +476,12 @@ def decide(messages, catalog: Catalog | None, tools, default_area=None, tool_cho
         return Decision(kind=DecisionKind.CLARIFY, reason='ambiguous-target')
     if position_out_of_range:
         return Decision(kind=DecisionKind.CLARIFY, reason='invalid-position')
-    function = _action_tool(intent, tools, tool_choice)
-    if function is None:
-        if intent == 'position' and _action_tool('position', tools, None) is None:
-            return Decision(kind=DecisionKind.CLARIFY, reason='position-unavailable')
-        return Decision(kind=DecisionKind.PASS, reason='tool-unavailable')
-    arguments = _arguments(function, entity, area, command.position)
-    if arguments is None:
-        return Decision(kind=DecisionKind.PASS, reason='unsupported-schema')
-    return Decision(kind=DecisionKind.TOOLCALL,
-                    tool_call=ToolCall(name=function['name'], arguments=arguments))
+    arguments = {'name': _canonical(entity.names), 'domain': [entity.domain]}
+    if area:
+        arguments['area'] = area
+    if command.percentage is not None:
+        arguments[intent] = command.percentage
+    return _device_action(intent, arguments, tools, tool_choice)
 
 
 def decide_request(body, *, language):

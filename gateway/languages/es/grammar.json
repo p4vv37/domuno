@@ -9,5 +9,6 @@
   "percentage_unit_pattern": "por ciento",
   "percentage_prefix": "ciento",
   "leading_articles": ["el", "la", "los", "las"],
+  "generic_light_words": ["luz", "luces", "lámpara", "lámparas", "iluminación"],
   "warmup_word": "casa"
 }

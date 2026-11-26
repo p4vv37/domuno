@@ -4,7 +4,8 @@
     "open": ["otwórz", "otwórzcie", "otwieraj", "otworzyć", "odsłoń", "odsuń"],
     "on": ["włącz", "włączcie", "zapal", "zaświeć", "uruchom"],
     "off": ["wyłącz", "wyłączcie", "zgaś"],
-    "position": ["ustaw"]
+    "position": ["ustaw"],
+    "brightness": ["ściemnij", "przyciemnij", "rozjaśnij"]
   },
   "responses": {
     "success": "Wykonano",
@@ -13,11 +14,11 @@
       "negation": "OK, nie wykonuję tej akcji.",
       "catalog-unavailable": "Nie mam teraz listy urządzeń.",
       "no-target": "Nie znalazłem takiego urządzenia. Podaj dokładniejszą nazwę.",
-      "ambiguous-area": "Urządzenie ma kilka obszarów. Doprecyzuj jego nazwę w HA.",
+      "ambiguous-area": "Nie mogę jednoznacznie dopasować obszaru. Doprecyzuj jego nazwę.",
       "missing-area": "W którym pomieszczeniu mam to zrobić?",
       "area-mismatch": "Nie ma takiego urządzenia w tym pomieszczeniu.",
       "ambiguous-target": "Jest kilka pasujących urządzeń. Podaj dokładniejszą nazwę.",
-      "invalid-position": "Podaj pozycję jako pełny procent od zera do stu.",
+      "invalid-position": "Podaj pełny procent od zera do stu.",
       "position-unavailable": "Nie mam zgodnego narzędzia do ustawienia pozycji tego urządzenia."
     }
   }

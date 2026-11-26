@@ -1,8 +1,9 @@
 """Polish command grammar and optional SGJP inflection strategy."""
 from functools import lru_cache
 from pathlib import Path
+import re
 
-from ..base import Language
+from ..base import Command, Language
 
 try:
     from polish_inflection import odmien_fraze, odmien_lub_none, odmien_warianty, podaj
@@ -10,11 +11,22 @@ except ImportError:
     odmien_fraze = odmien_lub_none = odmien_warianty = podaj = None
 
 _CASES = ('nom', 'gen', 'dat', 'acc', 'ins', 'loc', 'voc')
+_RETRACTION = re.compile(r'(?:nie(?:[, ]+tak jest (?:ok|dobrze))?|anuluj|niewazne|bez zmian)')
 
 
 class Strategy(Language):
     code = 'pl'
     vocabulary_path = Path(__file__).with_name('vocabulary.json')
+
+    def parse(self, text):
+        # Only a standalone, explicit retraction cancels a parsed command.
+        # Other trailing text must remain part of the utterance.
+        parts = re.split(r'(?<=[.!])\s+', text)
+        if len(parts) == 2 and _RETRACTION.fullmatch(self.normalize(parts[1])):
+            first = super().parse(parts[0].rstrip('.!'))
+            if first.intent is not None and first.reason is None:
+                return Command(reason='negation')
+        return super().parse(text)
 
     def _head_lemma(self, alias):
         """(lemma, numbers) of the alias head, or None when not safely inflectable."""

@@ -224,7 +224,7 @@ class PositionTests(unittest.TestCase):
         try:
             with patch.dict(sys.modules, {'num2words': None}):
                 self.assertEqual(language.parse('Open Awning to fifty percent').reason, 'outside-grammar')
-                self.assertEqual(language.parse('Open Awning to 50%').position, 50)
+                self.assertEqual(language.parse('Open Awning to 50%').percentage, 50)
         finally:
             language._number_words.cache_clear()
 

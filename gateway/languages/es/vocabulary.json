@@ -4,7 +4,8 @@
     "open": ["abre", "abra", "abrir", "sube"],
     "on": ["enciende", "encienda", "encender", "prende"],
     "off": ["apaga", "apague", "apagar"],
-    "position": ["pon", "ponga", "ajusta", "ajuste"]
+    "position": ["pon", "ponga", "ajusta", "ajuste"],
+    "brightness": ["atenúa", "intensifica", "ajusta el brillo de", "pon el brillo de"]
   },
   "responses": {
     "success": "Listo.",

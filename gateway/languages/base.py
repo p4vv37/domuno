@@ -32,8 +32,10 @@ def load_vocabulary(path, reserved):
         raise ValueError('Vocabulary requires commands and responses')
     commands, responses = data['commands'], data['responses']
     required = {'close', 'open', 'on', 'off'}
-    if not isinstance(commands, dict) or not required <= set(commands) <= required | {'position'}:
-        raise ValueError('Vocabulary commands require close, open, on and off, with optional position')
+    allowed_intents = required | {'position', 'brightness'}
+    if not isinstance(commands, dict) or not required <= set(commands) <= allowed_intents:
+        raise ValueError('Vocabulary commands require close, open, on and off; '
+                         'optional: brightness, position')
     seen, normalized = set(), {}
     for intent, words in commands.items():
         if not isinstance(words, list) or not words:
@@ -72,7 +74,7 @@ class Command:
     intent: str | None = None
     target: str = ''
     reason: str | None = None
-    position: int | None = None
+    percentage: int | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,8 @@ class Grammar:
     percentage_prefix: str
     warmup_word: str
     position_labels: frozenset[str] = frozenset()
+    brightness_labels: frozenset[str] = frozenset()
+    generic_light_words: frozenset[str] = frozenset()
     leading_articles: frozenset[str] = frozenset()
     normalize_apostrophes: bool = False
     allowed_prefix_words: frozenset[str] | None = None
@@ -98,7 +102,8 @@ class Grammar:
             data = json.load(source)
         word_sets = ('area_prepositions', 'position_prepositions', 'reserved_synonym_words',
                      'prefix_blockers', 'tail_blockers', 'negations')
-        optional_sets = ('position_labels', 'leading_articles', 'allowed_prefix_words')
+        optional_sets = ('position_labels', 'brightness_labels', 'generic_light_words',
+                         'leading_articles', 'allowed_prefix_words')
         strings = ('percentage_unit_pattern', 'percentage_prefix', 'warmup_word')
         required = set(word_sets + strings)
         allowed = required | set(optional_sets) | {'normalize_apostrophes'}
@@ -157,12 +162,14 @@ class Language(ABC):
     def has_lemma(self):
         return simplemma is not None
 
+    def _without_leading_article(self, text):
+        words = text.split(maxsplit=1)
+        if words and words[0].casefold() in self.grammar.leading_articles:
+            return words[1] if len(words) == 2 else ''
+        return text
+
     def lemma(self, text):
-        if self.grammar.leading_articles:
-            words = text.split()
-            if words and words[0].casefold() in self.grammar.leading_articles:
-                words = words[1:]
-            text = ' '.join(words)
+        text = self._without_leading_article(text)
         if simplemma is not None:
             text = ' '.join(simplemma.lemmatize(token, lang=self.code) for token in text.split())
         return self.normalize(text)
@@ -212,18 +219,40 @@ class Language(ABC):
             return Command(reason='negation')
         if not self.allows_prefix(prefix):
             return Command(reason='outside-grammar')
-        target, position, error = self.split_position(' '.join(text.split()[index+width:]))
-        if error:
-            return Command(intent=intent, target=target, reason=error, position=position)
+        target, percentage, error = self.split_position(' '.join(text.split()[index+width:]))
+        target, intent = self._strip_label(target, intent)
         tail = self.normalize(target).split()
         if (any(word in rules.tail_blockers for word in tail)
                 or any('%' in word or word.startswith(rules.percentage_prefix) for word in tail)
                 or self.find_command(tail)[0] is not None
-                or (intent == 'position' and position is None)):
+                or (intent in ('position', 'brightness') and (not tail or percentage is None))):
             return Command(reason='outside-grammar')
-        if intent == 'position' and tail and tail[0] in rules.position_labels:
-            target = ' '.join(target.split()[1:])
-        return Command(intent, target, position=position)
+        return Command(intent, target, reason=error, percentage=percentage)
+
+    def _strip_label(self, target, intent):
+        """Drop a leading "jasność"/"pozycję" label and pick the matching intent.
+
+        `ustaw jasność X na 20%` uses the cover-position verb but is a brightness
+        request; the label, not the verb, decides which tool is appropriate.
+        """
+        words = target.split()
+        if not words:
+            return target, intent
+        head = self.normalize(words[0])
+        rules = self.grammar
+        if head in rules.brightness_labels:
+            if intent in ('position', 'brightness'):
+                return ' '.join(words[1:]), 'brightness'
+        elif intent == 'position' and head in rules.position_labels:
+            return ' '.join(words[1:]), 'position'
+        return target, intent
+
+    def is_generic_light(self, text):
+        """True when the phrase is a bare light noun, not a device name."""
+        allowed = self.grammar.generic_light_words
+        words = self._without_leading_article(text).split()
+        return bool(allowed and len(words) == 1
+                    and (self.normalize(words[0]) in allowed or self.lemma(words[0]) in allowed))
 
     @lru_cache(maxsize=1)
     def _number_words(self):

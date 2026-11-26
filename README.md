@@ -82,9 +82,11 @@ grammar to the model. Home Assistant still decides which entities are exposed
 and executes the action.
 
 The router handles on/off for lights, switches, fans and input booleans,
-open/close for covers, and absolute cover positions. It can refuse a recognized
-negation locally; conditions, multiple actions and unsupported parameters go to
-the LLM. Details:
+open/close for covers, absolute cover positions, and absolute light brightness
+in Polish, English, and Spanish. A request like `dim the lights in the study to
+20%` targets every light in the named area; a named light targets just that one.
+The router can refuse a recognized negation or an explicit Polish retraction
+locally; conditions, multiple actions and unsupported parameters go to the LLM. Details:
 [docs/router.md](docs/router.md).
 
 The gateway never caches answers and never replays actions. It may reuse a token
@@ -371,8 +373,8 @@ reading order and review process. To step through `decide()` on a PC, use
 ### How to add a router language
 
 Start with a vocabulary: list the synonymous words or phrases that map to each
-router intent (`close`, `open`, `on`, `off`, and optionally `position`). Add the
-spoken success message and clarifications. These keys describe router intents,
+router intent (`close`, `open`, `on`, `off`, and optionally `position` and
+`brightness`). Add the spoken success message and clarifications. These keys describe router intents,
 not Home Assistant tool names. Here is the bundled [Polish example](gateway/languages/pl/vocabulary.json):
 
 ```json

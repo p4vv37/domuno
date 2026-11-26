@@ -12,5 +12,7 @@
   "percentage_unit_pattern": "procent(?:ach|ów|y|a)?",
   "percentage_prefix": "procent",
   "position_labels": ["pozycję", "pozycja"],
+  "brightness_labels": ["jasność", "jasności", "jasnością"],
+  "generic_light_words": ["światło", "lampa", "lampka", "oświetlenie", "żarówka"],
   "warmup_word": "dom"
 }
